@@ -1,0 +1,552 @@
+"""Search, result hydration, and ranking helpers for vector retrieval."""
+
+import hashlib
+import logging
+import re
+from types import SimpleNamespace
+from typing import Any
+
+from qdrant_client.http.models import FieldCondition, Filter, MatchValue, SparseVector
+
+from src.utils.state import DocumentType
+
+logger = logging.getLogger(__name__)
+
+
+class SearchOperations:
+    """Dense, hybrid, and reranked retrieval helpers."""
+
+    _TABLE_PART_ID_PATTERN = re.compile(r"\.table_(\d+)\.part_(\d+)$")
+    _RRF_RELATIVE_KEEP_RATIO = 0.5
+    _RERANKER_FINAL_SCORE_THRESHOLD = 0.0
+
+    async def search_similar(
+        self,
+        query: str,
+        document_type: DocumentType | None = None,
+        top_k: int = 5,
+        score_threshold: float = 0.5,
+    ) -> list[dict]:
+        """
+        Retrieve relevant indexed document context using the configured strategy.
+
+        Args:
+            query: Search query text
+            document_type: Filter by document type
+            top_k: Maximum number of hydrated parent results to return
+            score_threshold: Dense-stage minimum score used only by pure similarity retrieval
+
+        Returns:
+            List of hydrated parent chunks with matched child metadata
+        """
+        query_embedding = await self._get_embeddings().aembed_query(query)
+        self._ensure_collection_for_vector_size(len(query_embedding))
+        cache_key = self._build_search_cache_key(
+            query=query,
+            document_type=document_type,
+            top_k=top_k,
+            score_threshold=score_threshold,
+        )
+        cached_results = self.cache.get_json(cache_key)
+        if cached_results is not None:
+            logger.debug("Returning cached retrieval results for %s", cache_key)
+            return cached_results
+
+        query_filter = self._build_document_filter(document_type)
+        results = self._search_candidates(
+            query=query,
+            query_embedding=query_embedding,
+            query_filter=query_filter,
+            top_k=top_k,
+            score_threshold=score_threshold,
+        )
+
+        hydrated = self._hydrate_results(results)
+        ordered = sorted(
+            hydrated.values(),
+            key=lambda item: item["score"],
+            reverse=True,
+        )
+        reranked = self._rerank_results(query, ordered)
+        filtered = self._filter_final_results(reranked)
+        limited = filtered[:top_k]
+        self.cache.set_json(cache_key, limited)
+        return limited
+
+    def _hydrate_results(self, results: list[Any]) -> dict[str, dict[str, Any]]:
+        """Group child hits by parent chunk and attach parent context."""
+        hydrated: dict[str, dict[str, Any]] = {}
+        fallback_parent_key = "__orphan__"
+
+        for result in results:
+            payload = dict(self._get_result_payload(result))
+            result_id = self._get_result_id(result)
+            result_score = self._get_result_score(result)
+            vector_score = self._get_optional_result_score(result, "dense_score")
+            bm25_score = self._get_optional_result_score(result, "bm25_score")
+            rrf_score = self._get_optional_result_score(result, "rrf_score")
+
+            parent_id = payload.get("parent_id") or f"{fallback_parent_key}:{result_id}"
+            parent_record = self.parent_store.get(parent_id) if payload.get("parent_id") else None
+            parent_metadata = dict(parent_record.get("metadata", {})) if parent_record else {}
+            matched_child = self._build_matched_child(result_id, result_score, payload)
+
+            if parent_id not in hydrated:
+                hydrated[parent_id] = self._build_hydrated_parent(
+                    parent_id=parent_id,
+                    result_id=result_id,
+                    result_score=result_score,
+                    vector_score=vector_score,
+                    bm25_score=bm25_score,
+                    rrf_score=rrf_score,
+                    payload=payload,
+                    parent_record=parent_record,
+                    parent_metadata=parent_metadata,
+                    matched_child=matched_child,
+                )
+                continue
+
+            self._merge_child_match(
+                parent=hydrated[parent_id],
+                result_score=result_score,
+                vector_score=vector_score,
+                bm25_score=bm25_score,
+                rrf_score=rrf_score,
+                matched_child=matched_child,
+            )
+
+        return hydrated
+
+    def _build_hydrated_parent(
+        self,
+        parent_id: str,
+        result_id: Any,
+        result_score: float,
+        vector_score: float | None,
+        bm25_score: float | None,
+        rrf_score: float | None,
+        payload: dict[str, Any],
+        parent_record: dict[str, Any] | None,
+        parent_metadata: dict[str, Any],
+        matched_child: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Create the first hydrated parent record for a matching child hit."""
+        section_id = parent_metadata.get("section_id") or payload.get("section_id")
+        parent_text = parent_record.get("text") if parent_record else payload.get("text", "")
+        breadcrumb = parent_metadata.get("breadcrumb") or payload.get("breadcrumb")
+        return {
+            "chunk_id": payload.get("chunk_id", str(result_id)),
+            "text": parent_text,
+            "parent_text": parent_text,
+            "child_text": payload.get("text", ""),
+            "score": result_score,
+            "vector_score": vector_score if vector_score is not None else result_score,
+            "bm25_score": bm25_score,
+            "rrf_score": rrf_score,
+            "document_id": payload.get("document_id"),
+            "filename": payload.get("filename"),
+            "doc_title": parent_metadata.get("doc_title") or payload.get("doc_title"),
+            "document_type": payload.get("document_type"),
+            "parent_id": parent_id,
+            "section_id": section_id,
+            "breadcrumb": breadcrumb,
+            "chapter": parent_metadata.get("chapter") or payload.get("chapter"),
+            "section": parent_metadata.get("section") or payload.get("section"),
+            "clause": payload.get("clause"),
+            "cross_refs": parent_metadata.get("cross_refs") or payload.get("cross_refs", []),
+            "chunk_type": parent_metadata.get("chunk_type") or payload.get("chunk_type"),
+            "source_locations": parent_metadata.get("source_locations")
+            or payload.get("source_locations", []),
+            "matched_children": [matched_child],
+        }
+
+    def _merge_child_match(
+        self,
+        parent: dict[str, Any],
+        result_score: float,
+        vector_score: float | None,
+        bm25_score: float | None,
+        rrf_score: float | None,
+        matched_child: dict[str, Any],
+    ) -> None:
+        """Merge another child hit into an already hydrated parent result."""
+        parent["score"] = max(parent["score"], result_score)
+        parent["vector_score"] = max(
+            parent["vector_score"],
+            vector_score if vector_score is not None else result_score,
+        )
+        if bm25_score is not None:
+            parent["bm25_score"] = max(parent.get("bm25_score") or 0.0, bm25_score)
+        if rrf_score is not None:
+            parent["rrf_score"] = max(parent.get("rrf_score") or 0.0, rrf_score)
+        parent["matched_children"].append(matched_child)
+
+    def _build_document_filter(self, document_type: DocumentType | None) -> Filter | None:
+        """Build an optional filter for a specific document type."""
+        if not document_type:
+            return None
+        return Filter(
+            must=[
+                FieldCondition(
+                    key="document_type",
+                    match=MatchValue(value=document_type.value),
+                )
+            ]
+        )
+
+    def _build_matched_child(
+        self,
+        chunk_id: Any,
+        score: float,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Format a child hit attached to a hydrated parent result."""
+        return {
+            "chunk_id": payload.get("chunk_id", str(chunk_id)),
+            "text": payload.get("text", ""),
+            "score": score,
+            "section_id": payload.get("section_id"),
+            "breadcrumb": payload.get("breadcrumb"),
+            "chunk_type": payload.get("chunk_type"),
+            "cross_refs": payload.get("cross_refs", []),
+            "source_locations": payload.get("source_locations", []),
+            "chunk_index": payload.get("chunk_index"),
+            "table_part": payload.get("table_part"),
+        }
+
+    def _resolve_candidate_limit(self, top_k: int) -> int:
+        """Choose how many first-stage hits to fetch before fusion or reranking."""
+        multiplier = 3
+        if self.retrieval_strategy in {"rrf", "reranker"}:
+            multiplier = self.reranker_candidate_multiplier
+        return max(top_k * multiplier, top_k)
+
+    def _rerank_results(
+        self,
+        query: str,
+        results: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Apply a second-stage cross-encoder reranker when configured."""
+        if self.retrieval_strategy != "reranker" or len(results) < 2:
+            return results
+
+        documents = [self._build_reranker_document(result) for result in results]
+        scores = self._score_reranker_documents(query=query, documents=documents)
+        reranked: list[dict[str, Any]] = []
+        for index, reranker_score in sorted(
+            enumerate(scores),
+            key=lambda item: item[1],
+            reverse=True,
+        ):
+            result = dict(results[index])
+            result["reranker_score"] = float(reranker_score)
+            result["score"] = float(reranker_score)
+            reranked.append(result)
+        return reranked
+
+    def _filter_final_results(self, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Apply strategy-aware post-ranking filtering without harming first-stage recall."""
+        if not results:
+            return []
+
+        if self.retrieval_strategy == "reranker":
+            return [
+                result
+                for result in results
+                if float(result.get("reranker_score", result.get("score", 0.0)))
+                > self._RERANKER_FINAL_SCORE_THRESHOLD
+            ]
+
+        if self.retrieval_strategy == "rrf":
+            top_score = float(results[0].get("rrf_score") or results[0].get("score") or 0.0)
+            if top_score <= 0.0:
+                return []
+            return [
+                result
+                for result in results
+                if float(result.get("rrf_score") or result.get("score") or 0.0)
+                >= top_score * self._RRF_RELATIVE_KEEP_RATIO
+            ]
+
+        return results
+
+    def _score_reranker_documents(self, query: str, documents: list[str]) -> list[float]:
+        """Score documents with the configured reranker model."""
+        scores = [
+            float(score)
+            for score in self._get_reranker().rerank(
+                query=query,
+                documents=documents,
+            )
+        ]
+        if len(scores) != len(documents):
+            raise RuntimeError(
+                "Reranker returned an unexpected number of scores: "
+                f"expected={len(documents)}, received={len(scores)}"
+            )
+        return scores
+
+    def _build_reranker_document(self, result: dict[str, Any]) -> str:
+        """Build the text payload passed to the cross-encoder reranker."""
+        parts: list[str] = []
+        if result.get("breadcrumb"):
+            parts.append(f"Section: {result['breadcrumb']}")
+        child_evidence = self._build_reranker_child_evidence(
+            result.get("matched_children", [])
+        )
+        if child_evidence:
+            parts.append(child_evidence)
+        if result.get("parent_text") and not child_evidence:
+            parts.append(result["parent_text"])
+        elif result.get("text") and not child_evidence:
+            parts.append(result["text"])
+        return "\n\n".join(parts)
+
+    def _build_reranker_child_evidence(self, matched_children: list[Any]) -> str:
+        """Prioritize precise child matches so reranking does not over-index broad parents."""
+        snippets: list[str] = []
+        seen: set[str] = set()
+        seen_groups: set[str] = set()
+        ranked_children = sorted(
+            (child for child in matched_children if isinstance(child, dict)),
+            key=self._matched_child_rank_key,
+            reverse=True,
+        )
+        for child in ranked_children:
+            text = str(child.get("text") or "").strip()
+            if not text:
+                continue
+            normalized = " ".join(text.split()).lower()
+            if normalized in seen:
+                continue
+            group_key = self._matched_child_group_key(child)
+            if group_key and group_key in seen_groups:
+                continue
+            seen.add(normalized)
+            if group_key:
+                seen_groups.add(group_key)
+            snippets.append(text[:2000])
+            if len(snippets) >= 2:
+                break
+        if not snippets:
+            return ""
+        return "Matched child evidence:\n" + "\n\n---\n\n".join(snippets)
+
+    def _matched_child_rank_key(self, child: dict[str, Any]) -> tuple[int, int, float, int]:
+        """Prefer content-rich table/list chunks over captions or generic paragraphs."""
+        text = str(child.get("text") or "").strip()
+        chunk_type = str(child.get("chunk_type") or "").lower()
+        is_table_like = chunk_type in {"table", "list"} or self._is_table_like_text(text)
+        is_caption_only = self._is_caption_only_child_text(text)
+        data_richness = self._child_data_richness(text)
+        score = float(child.get("score") or 0.0)
+        text_length = len(text)
+        table_order, part_order = self._matched_child_order(child)
+        return (
+            1 if is_table_like else 0,
+            0 if is_caption_only else 1,
+            -table_order,
+            -part_order,
+            data_richness,
+            int(score * 1_000_000) + min(text_length, 4000),
+        )
+
+    def _matched_child_order(self, child: dict[str, Any]) -> tuple[int, int]:
+        """Recover stable table/part ordering from the logical chunk id."""
+        chunk_id = str(child.get("chunk_id") or "")
+        match = self._TABLE_PART_ID_PATTERN.search(chunk_id)
+        if not match:
+            return (10_000, 10_000)
+        return (int(match.group(1)), int(match.group(2)))
+
+    def _matched_child_group_key(self, child: dict[str, Any]) -> str:
+        """Group split table/list parts so one logical table does not dominate context."""
+        chunk_id = str(child.get("chunk_id") or "")
+        if not chunk_id:
+            return ""
+        return re.sub(r"\.part_\d+$", "", chunk_id)
+
+    def _child_data_richness(self, text: str) -> int:
+        """Estimate how much row-level evidence a child chunk contains."""
+        normalized = " ".join(text.split())
+        if not normalized:
+            return 0
+        richness = normalized.count("<tr") + normalized.count("|")
+        richness += sum(
+            1
+            for marker in ("PL1", "PL2", "PL3", "PL4", "CPL", "No", "Profesi", "Deskripsi")
+            if marker.lower() in normalized.lower()
+        )
+        richness += min(len(normalized.split()), 200)
+        return richness
+
+    def _is_caption_only_child_text(self, text: str) -> bool:
+        """Detect table/list titles that should not outrank row-bearing evidence."""
+        normalized = " ".join(text.split()).strip().lower()
+        if not normalized:
+            return True
+        if self._is_table_like_text(normalized):
+            return normalized.count("<tr") <= 0 and normalized.count("|") <= 1
+        return normalized.startswith("tabel ") and len(normalized.split()) <= 12
+
+    def _is_table_like_text(self, text: str) -> bool:
+        """Return whether text likely contains serialized table/list structure."""
+        lowered = text.lower()
+        return "|" in text or "tabel " in lowered or "<table" in lowered or "<td" in lowered
+
+    def _build_search_cache_key(
+        self,
+        query: str,
+        document_type: DocumentType | None,
+        top_k: int,
+        score_threshold: float,
+    ) -> str:
+        """Build a stable Redis key for retrieval results."""
+        digest = hashlib.sha256(
+            (
+                f"{query}|{document_type.value if document_type else 'all'}|"
+                f"{top_k}|{score_threshold}|{self.retrieval_strategy}|"
+                f"{self.reranker_model or 'none'}|{self.reranker_base_url or 'local'}|"
+                f"{self.reranker_candidate_multiplier}|"
+                f"{self._supports_bm25_vectors()}|{self._RRF_RANK_CONSTANT}|"
+                f"{self._get_bm25_cache_signature()}"
+            ).encode()
+        ).hexdigest()
+        return f"search:{digest}"
+
+    def _search_candidates(
+        self,
+        query: str,
+        query_embedding: list[float],
+        query_filter: Filter | None,
+        top_k: int,
+        score_threshold: float,
+    ) -> list[Any]:
+        """Run the configured first-stage retriever.
+
+        `score_threshold` is applied only in similarity mode. RRF gathers dense and
+        BM25 candidates without an absolute score cutoff, then filters by relative
+        fused score. Reranker mode also skips first-stage score filtering so the
+        second-stage cross-encoder can decide the final ranking.
+        """
+        if self.retrieval_strategy == "rrf" and self._supports_bm25_vectors():
+            bm25_query = self._build_bm25_vector(query, is_query=True)
+            if bm25_query is not None:
+                return self._rrf_search(
+                    query_embedding=query_embedding,
+                    bm25_query=bm25_query,
+                    query_filter=query_filter,
+                    top_k=top_k,
+                )
+        candidate_threshold = None if self.retrieval_strategy == "reranker" else score_threshold
+        return self._dense_search(
+            query_embedding=query_embedding,
+            query_filter=query_filter,
+            top_k=top_k,
+            score_threshold=candidate_threshold,
+        )
+
+    def _dense_search(
+        self,
+        query_embedding: list[float],
+        query_filter: Filter | None,
+        top_k: int,
+        score_threshold: float | None,
+    ) -> list[Any]:
+        """Run a dense-vector nearest-neighbor search."""
+        return self._query_points(
+            collection_name=self.collection_name,
+            query=query_embedding,
+            query_filter=query_filter,
+            limit=self._resolve_candidate_limit(top_k),
+            score_threshold=score_threshold,
+            with_payload=True,
+        )
+
+    def _rrf_search(
+        self,
+        query_embedding: list[float],
+        bm25_query: SparseVector,
+        query_filter: Filter | None,
+        top_k: int,
+    ) -> list[Any]:
+        """Fuse dense and BM25-ranked candidates with Reciprocal Rank Fusion."""
+        candidate_limit = self._resolve_candidate_limit(top_k)
+        dense_points = self._query_points(
+            collection_name=self.collection_name,
+            query=query_embedding,
+            query_filter=query_filter,
+            limit=candidate_limit,
+            with_payload=True,
+        )
+        bm25_points = self._query_points(
+            collection_name=self.collection_name,
+            query=bm25_query,
+            using=self.bm25_vector_name,
+            query_filter=query_filter,
+            limit=candidate_limit,
+            with_payload=True,
+        )
+        return self._fuse_with_rrf(
+            dense_points=dense_points,
+            bm25_points=bm25_points,
+            limit=candidate_limit,
+        )
+
+    def _fuse_with_rrf(
+        self,
+        dense_points: list[Any],
+        bm25_points: list[Any],
+        limit: int,
+    ) -> list[Any]:
+        """Merge dense and BM25 rankings using the standard RRF formula."""
+        fused_scores: dict[str, float] = {}
+        dense_scores: dict[str, float] = {}
+        bm25_scores: dict[str, float] = {}
+        point_by_id: dict[str, Any] = {}
+
+        for rank, point in enumerate(dense_points, start=1):
+            point_id = str(self._get_result_id(point))
+            fused_scores[point_id] = fused_scores.get(point_id, 0.0) + self._rrf_weight(rank)
+            dense_scores[point_id] = self._get_result_score(point)
+            point_by_id.setdefault(point_id, point)
+
+        for rank, point in enumerate(bm25_points, start=1):
+            point_id = str(self._get_result_id(point))
+            fused_scores[point_id] = fused_scores.get(point_id, 0.0) + self._rrf_weight(rank)
+            bm25_scores[point_id] = self._get_result_score(point)
+            point_by_id.setdefault(point_id, point)
+
+        fused: list[Any] = []
+        for point_id, score in sorted(fused_scores.items(), key=lambda item: item[1], reverse=True):
+            source = point_by_id[point_id]
+            fused.append(
+                SimpleNamespace(
+                    id=self._get_result_id(source),
+                    score=float(score),
+                    payload=dict(self._get_result_payload(source)),
+                    dense_score=dense_scores.get(point_id),
+                    bm25_score=bm25_scores.get(point_id),
+                    rrf_score=float(score),
+                )
+            )
+        return fused[:limit]
+
+    def _get_result_id(self, result: Any) -> Any:
+        """Read a point identifier from either a ScoredPoint or a test double."""
+        return result.id
+
+    def _get_result_score(self, result: Any) -> float:
+        """Read the main ranking score from either a ScoredPoint or a test double."""
+        return float(result.score)
+
+    def _get_optional_result_score(self, result: Any, field: str) -> float | None:
+        """Read an auxiliary ranking score when it is available."""
+        value = getattr(result, field, None)
+        if value is None:
+            return None
+        return float(value)
+
+    def _get_result_payload(self, result: Any) -> dict[str, Any]:
+        """Read a result payload from either a ScoredPoint or a test double."""
+        return result.payload or {}
