@@ -1,2 +1,2 @@
-# Academic Services and Student Records Chatbot - LangGraph Agent
-__version__ = "0.1.0"
+# PASsistant — LangGraph Agent
+from src.__version__ import VERSION, __version__  # noqa: F401
