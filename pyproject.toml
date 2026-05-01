@@ -1,24 +1,14 @@
 [project]
-name = "student-records-chatbot"
+name = "passistant"
 version = "0.1.0"
-description = "Production-ready LangGraph chatbot for student records and PDF document processing"
+description = "LangGraph-powered chatbot for academic services and student records with OCR, RAG, and Qdrant"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
-    {name = "Your Name", email = "you@example.com"}
+    {name = "Ksma Lnang", email = "ksmalnang@gmail.com"}
 ]
-keywords = ["langgraph", "chatbot", "student-records", "rag", "qdrant", "ocr"]
-
-classifiers = [
-    "Development Status :: 4 - Beta",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Topic :: Software Development :: Libraries :: Python Modules",
-]
+keywords = ["passistant", "langgraph", "chatbot", "student-records", "academic-services", "rag", "qdrant", "ocr"]
 
 dependencies = [
     "aiofiles>=24.1.0",
