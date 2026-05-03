@@ -24,6 +24,7 @@ dependencies = [
     "fastapi>=0.136.1",
     "uvicorn[standard]>=0.46.0",
     "python-multipart>=0.0.26",
+    "python-telegram-bot>=22,<23",
     "redis>=6.4.0",
     "tenacity>=9.0.0",
     "zai-sdk>=0.2.2",

@@ -105,6 +105,14 @@ class Settings(BaseSettings):
     )
     DATA_DIR: Path = Field(default=Path("data"))
 
+    # --- Telegram Bot ---
+    TELEGRAM_BOT_TOKEN: Optional[str] = Field(default=None)
+    TELEGRAM_WEBHOOK_URL: Optional[str] = Field(default=None)
+    TELEGRAM_WEBHOOK_SECRET_TOKEN: Optional[str] = Field(default=None)
+    TELEGRAM_ENABLED: bool = Field(default=False)
+    TELEGRAM_MAX_FILE_BYTES: int = Field(default=20_000_000)
+    TELEGRAM_ALLOWED_FILE_MIME_TYPES: list[str] | None = Field(default=None)
+
     @property
     def is_production(self) -> bool:
         """Check if running in production environment."""
