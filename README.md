@@ -33,6 +33,7 @@ src/
 │   ├── models.py         # Request/response schemas
 │   ├── services.py       # Orchestration logic
 │   └── sessions.py       # Session management
+├── telegram_bot/         # Telegram adapter, formatting, polling
 ├── config/
 │   ├── logging.py        # RFC 5424 logging
 │   └── settings.py       # Pydantic settings
@@ -123,6 +124,7 @@ langgraph dev
 | `GET` | `/health` | Health check |
 | `POST` | `/chat` | Send a message |
 | `POST` | `/chat/upload` | Chat with file upload |
+| `POST` | `/telegram/webhook` | Telegram webhook |
 | `POST` | `/upload` | Upload documents only |
 | `WS` | `/ws/{session_id}` | WebSocket streaming |
 
@@ -137,6 +139,8 @@ curl -X POST http://localhost:8000/chat \
 curl -X POST http://localhost:8000/chat/upload \
   -F "message=Process this transcript" \
   -F "files=@transcript.pdf"
+
+python -m src.telegram_bot.polling
 ```
 
 ---
@@ -176,6 +180,33 @@ curl -X POST http://localhost:8000/chat/upload \
 | `DEBUG` | Debug mode | `false` |
 | `LOG_LEVEL` | Log level | `INFO` |
 | `DATA_DIR` | Base data directory | `data` |
+| `TELEGRAM_ENABLED` | Enable Telegram integration | `false` |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token | — |
+| `TELEGRAM_WEBHOOK_URL` | Public webhook URL | — |
+| `TELEGRAM_WEBHOOK_SECRET_TOKEN` | Webhook secret token | — |
+| `TELEGRAM_MAX_FILE_BYTES` | Max Telegram upload size in bytes | `20000000` |
+
+## Telegram
+
+Use webhook mode in production and polling mode for local development.
+
+```bash
+# Local development
+python -m src.telegram_bot.polling
+
+# Register webhook explicitly
+curl -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"url\": \"${TELEGRAM_WEBHOOK_URL}\",
+    \"secret_token\": \"${TELEGRAM_WEBHOOK_SECRET_TOKEN}\",
+    \"allowed_updates\": [\"message\"]
+  }"
+
+curl "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo"
+```
+
+Group chats use a shared session per Telegram chat id: `telegram:{chat_id}`.
 
 ---
 

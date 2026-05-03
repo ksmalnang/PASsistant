@@ -2,6 +2,7 @@
 
 import logging
 from collections.abc import Callable
+from io import BytesIO
 from typing import Any
 
 from fastapi import UploadFile
@@ -39,18 +40,18 @@ class ChatRouteService:
     async def handle_chat_upload(
         self,
         message: str,
-        files: list[UploadFile],
+        files: list[UploadFile] | list[tuple[str, bytes]],
         session_id: str | None = None,
     ) -> ChatResponse:
         """Send uploaded files to an agent session."""
         agent, active_session_id = self._session_manager.get_or_create(session_id)
-        file_tuples = await read_upload_files(files)
+        file_tuples = await self._resolve_upload_file_tuples(files)
         final_state = await agent.chat_with_state(message, files=file_tuples)
         return ChatResponse(
             response=self._extract_response_text(final_state),
             session_id=active_session_id,
             intent=final_state.current_intent,
-            documents_processed=len(files),
+            documents_processed=len(file_tuples),
             citations=self._extract_citations(final_state),
         )
 
@@ -71,6 +72,24 @@ class ChatRouteService:
     def _extract_citations(self, final_state: Any) -> list[Any]:
         """Resolve structured citations from a workflow state or test double."""
         return list(getattr(final_state, "citations", []) or [])
+
+    async def _resolve_upload_file_tuples(
+        self,
+        files: list[UploadFile] | list[tuple[str, bytes]],
+    ) -> list[tuple[str, bytes]]:
+        """Normalize upload payloads from HTTP and adapter-based channels."""
+        if not files:
+            return []
+
+        first_file = files[0]
+        if isinstance(first_file, UploadFile):
+            return await read_upload_files(files)  # type: ignore[arg-type]
+
+        resolved_files: list[tuple[str, bytes]] = []
+        for filename, contents in files:  # type: ignore[misc]
+            upload = UploadFile(filename=filename, file=BytesIO(contents))
+            resolved_files.append((upload.filename or "upload", await upload.read()))
+        return resolved_files
 
 
 class DocumentRouteService:
@@ -119,8 +138,7 @@ class DocumentRouteService:
     def _build_ingestion_response(self, document: Any) -> DocumentIngestionResponse:
         """Build the API response for a processed document."""
         return DocumentIngestionResponse(
-            success=document.processing_status.value == "completed"
-            and len(document.chunk_ids) > 0,
+            success=document.processing_status.value == "completed" and len(document.chunk_ids) > 0,
             document_id=document.document_id,
             filename=document.filename,
             document_type=document.document_type.value,
@@ -156,7 +174,7 @@ async def handle_chat_message(message: str, session_id: str | None = None) -> Ch
 
 async def handle_chat_upload(
     message: str,
-    files: list[UploadFile],
+    files: list[UploadFile] | list[tuple[str, bytes]],
     session_id: str | None = None,
 ) -> ChatResponse:
     """Send uploaded files to an agent session."""
