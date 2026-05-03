@@ -19,7 +19,7 @@ Usage:
 import asyncio
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any, Optional
 
@@ -33,6 +33,23 @@ from src.utils.state import AgentState
 
 configure_logging()
 logger = logging.getLogger(__name__)
+
+
+def _message_content_to_text(content: Any) -> str:
+    """Normalize LangChain message content into plain text."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if text is not None:
+                    parts.append(str(text))
+        return "\n".join(part for part in parts if part)
+    return str(content)
 
 
 class StudentRecordsAgent:
@@ -132,7 +149,7 @@ class StudentRecordsAgent:
         self,
         message: str,
         files: Optional[list[tuple[str, bytes]]] = None,
-    ):
+    ) -> AsyncIterator[Any]:
         """
         Stream agent responses for real-time updates.
 
@@ -191,7 +208,7 @@ class StudentRecordsAgent:
         """Resolve the assistant response from the final graph state."""
         if final_state.messages:
             last_message = final_state.messages[-1]
-            return last_message.content
+            return _message_content_to_text(last_message.content)
         return "I processed your request but have no response to provide."
 
 
@@ -209,7 +226,7 @@ compiled_app = compile_app()
 # =============================================================================
 
 
-async def main():
+async def main() -> None:
     """Interactive CLI for testing the agent."""
     print("=" * 60)
     print("Academic Services and Student Records Chatbot")

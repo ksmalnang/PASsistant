@@ -3,7 +3,7 @@ State schema definitions for the LangGraph agent.
 Defines the complete state structure for student records and document processing.
 """
 
-from collections.abc import Sequence
+from collections.abc import MutableSequence
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Any, NamedTuple, Optional
@@ -137,7 +137,7 @@ class AgentState(BaseModel):
     """
 
     # --- Conversation ---
-    messages: Annotated[Sequence[BaseMessage], add_messages] = Field(
+    messages: Annotated[MutableSequence[BaseMessage], add_messages] = Field(
         default_factory=list, description="Conversation history with LangChain messages"
     )
 

@@ -129,7 +129,10 @@ class ResponseContextBuilder:
             reverse=True,
         )
 
-    def _matched_child_rank_key(self, child: dict[str, Any]) -> tuple[int, int, float, int]:
+    def _matched_child_rank_key(
+        self,
+        child: dict[str, Any],
+    ) -> tuple[int, int, int, int, int, int]:
         """Rank child evidence by usefulness for answer grounding."""
         text = str(child.get("text") or "").strip()
         chunk_type = str(child.get("chunk_type") or "").lower()

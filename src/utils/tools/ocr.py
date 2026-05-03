@@ -431,8 +431,8 @@ class GLMOCRTool:
         batch_text = str(response.md_results or "").strip()
         results: list[OCRPageResult] = []
         response_num_pages = (
-            response.data_info.num_pages
-            if getattr(response, "data_info", None) is not None
+            data_info.num_pages
+            if (data_info := getattr(response, "data_info", None)) is not None
             else None
         )
         metadata_page_count = (

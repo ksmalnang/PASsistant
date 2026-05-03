@@ -1,11 +1,15 @@
 """Shared LLM helpers for node implementations."""
 
+from typing import Any
+
 from langchain_openai import ChatOpenAI
+from pydantic import SecretStr
 
 from src.config import get_settings
+from src.services.contracts import InvokableLLM
 
 
-def _build_reasoning_extra_body(settings) -> dict | None:
+def _build_reasoning_extra_body(settings: Any) -> dict[str, Any] | None:
     """Build provider reasoning controls for OpenAI-compatible requests."""
     if not settings.LLM_REASONING_ENABLED:
         return None
@@ -19,7 +23,7 @@ def _build_reasoning_extra_body(settings) -> dict | None:
     return {"reasoning": reasoning}
 
 
-def get_llm():
+def get_llm() -> InvokableLLM | None:
     """Get configured LLM instance."""
     settings = get_settings()
     if not settings.OPENAI_API_KEY:
@@ -27,7 +31,7 @@ def get_llm():
     extra_body = _build_reasoning_extra_body(settings)
     return ChatOpenAI(
         model=settings.LLM_MODEL,
-        openai_api_key=settings.OPENAI_API_KEY,
+        api_key=SecretStr(settings.OPENAI_API_KEY),
         base_url=settings.OPENAI_BASE_URL,
         temperature=0.3,
         extra_body=extra_body,

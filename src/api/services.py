@@ -10,7 +10,7 @@ from langchain_core.messages import AIMessage
 from src.api.helpers import create_document_processor, read_upload_files
 from src.api.models import ChatResponse, DocumentIngestionResponse
 from src.api.sessions import get_or_create_agent
-from src.services.contracts import DocumentProcessor, SessionManager
+from src.services.contracts import ChatAgent, DocumentProcessor, SessionManager
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +93,8 @@ class DocumentRouteService:
         for file in files:
             try:
                 contents = await file.read()
-                document = await processor.ingest_upload(contents, file.filename)
+                filename = file.filename or "upload"
+                document = await processor.ingest_upload(contents, filename)
                 responses.append(self._build_ingestion_response(document))
             except Exception as exc:
                 logger.error(
@@ -106,7 +107,7 @@ class DocumentRouteService:
                     DocumentIngestionResponse(
                         success=False,
                         document_id="error",
-                        filename=file.filename,
+                        filename=file.filename or "upload",
                         document_type="other",
                         status="failed",
                         error=str(exc),
@@ -137,7 +138,7 @@ class DocumentRouteService:
 class _SessionManagerAdapter:
     """Adapt the legacy function-based session access to the SessionManager protocol."""
 
-    def get_or_create(self, session_id: str | None = None):
+    def get_or_create(self, session_id: str | None = None) -> tuple[ChatAgent, str]:
         """Delegate session access to the existing module function."""
         return get_or_create_agent(session_id)
 

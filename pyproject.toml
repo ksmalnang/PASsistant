@@ -35,7 +35,7 @@ dev = [
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
     "ruff>=0.7.0",
-    "mypy>=1.13.0",
+    "basedpyright>=1.29.0",
 ]
 
 [project.scripts]
@@ -74,9 +74,10 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
 
-# --- MyPy Configuration ---
-[tool.mypy]
-python_version = "3.11"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = true
+# --- BasedPyright Configuration ---
+[tool.basedpyright]
+pythonVersion = "3.11"
+include = ["src"]
+exclude = ["tests", ".venv", ".agent"]
+reportUnusedImport = true
+typeCheckingMode = "basic"

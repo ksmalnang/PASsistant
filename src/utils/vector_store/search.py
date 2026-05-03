@@ -4,13 +4,17 @@ import hashlib
 import logging
 import re
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
 
+from langchain_core.embeddings import Embeddings
 from qdrant_client.http.models import FieldCondition, Filter, MatchValue, SparseVector
 
+from src.utils.cache import RedisCache
 from src.utils.state import DocumentType
+from src.utils.tools.parent_store import ParentChunkStore
 
 logger = logging.getLogger(__name__)
+RetrievalStrategy = Literal["similarity", "rrf", "reranker"]
 
 
 class SearchOperations:
@@ -19,6 +23,28 @@ class SearchOperations:
     _TABLE_PART_ID_PATTERN = re.compile(r"\.table_(\d+)\.part_(\d+)$")
     _RRF_RELATIVE_KEEP_RATIO = 0.5
     _RERANKER_FINAL_SCORE_THRESHOLD = 0.0
+    cache: RedisCache
+    parent_store: ParentChunkStore
+    retrieval_strategy: RetrievalStrategy
+    reranker_candidate_multiplier: int
+    reranker_model: str | None
+    reranker_base_url: str | None
+    bm25_vector_name: str
+    collection_name: str
+    _RRF_RANK_CONSTANT: int
+
+    if TYPE_CHECKING:
+
+        def _get_embeddings(self) -> Embeddings: ...
+        def _ensure_collection_for_vector_size(self, vector_size: int) -> None: ...
+        def _get_reranker(self) -> Any: ...
+        def _supports_bm25_vectors(self) -> bool: ...
+        def _get_bm25_cache_signature(self) -> str: ...
+        def _build_bm25_vector(
+            self, text: str, *, is_query: bool = False
+        ) -> SparseVector | None: ...
+        def _query_points(self, **kwargs: Any) -> list[Any]: ...
+        def _rrf_weight(self, rank: int) -> float: ...
 
     async def search_similar(
         self,
@@ -291,9 +317,7 @@ class SearchOperations:
         parts: list[str] = []
         if result.get("breadcrumb"):
             parts.append(f"Section: {result['breadcrumb']}")
-        child_evidence = self._build_reranker_child_evidence(
-            result.get("matched_children", [])
-        )
+        child_evidence = self._build_reranker_child_evidence(result.get("matched_children", []))
         if child_evidence:
             parts.append(child_evidence)
         if result.get("parent_text") and not child_evidence:
@@ -332,7 +356,10 @@ class SearchOperations:
             return ""
         return "Matched child evidence:\n" + "\n\n---\n\n".join(snippets)
 
-    def _matched_child_rank_key(self, child: dict[str, Any]) -> tuple[int, int, float, int]:
+    def _matched_child_rank_key(
+        self,
+        child: dict[str, Any],
+    ) -> tuple[int, int, int, int, int, int]:
         """Prefer content-rich table/list chunks over captions or generic paragraphs."""
         text = str(child.get("text") or "").strip()
         chunk_type = str(child.get("chunk_type") or "").lower()

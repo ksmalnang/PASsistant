@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, cast
 
 from redis import Redis
 from redis.exceptions import RedisError
@@ -12,7 +12,7 @@ from redis.exceptions import RedisError
 from src.config import get_settings
 
 logger = logging.getLogger(__name__)
-_cache_instance: "RedisCache | None" = None
+_cache_instance: RedisCache | None = None
 
 
 class RedisCache:
@@ -52,6 +52,9 @@ class RedisCache:
             return None
 
         if cached is None:
+            return None
+        if not isinstance(cached, (str, bytes, bytearray)):
+            logger.warning("Redis returned non-JSON-compatible payload for key %s", key)
             return None
         return json.loads(cached)
 
@@ -97,7 +100,8 @@ class RedisCache:
         if not self.client:
             return set()
         try:
-            return {str(value) for value in self.client.smembers(self._key(key))}
+            members = cast(set[Any], self.client.smembers(self._key(key)))
+            return {str(value) for value in members}
         except RedisError as exc:
             logger.warning("Redis smembers failed for key %s: %s", key, exc)
             return set()

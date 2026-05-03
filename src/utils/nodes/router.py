@@ -7,6 +7,23 @@ from src.services.intent import IntentClassifier
 from src.utils.state import AgentState
 
 
+def _message_content_to_text(content: object) -> str:
+    """Normalize human message content into a plain string."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if text is not None:
+                    parts.append(str(text))
+        return "\n".join(part for part in parts if part)
+    return str(content)
+
+
 class RouterNode:
     """
     Intent classification and routing node.
@@ -47,4 +64,7 @@ class RouterNode:
         last_message = state.messages[-1]
         if not isinstance(last_message, HumanMessage):
             return {}
-        return self._classifier.classify(last_message.content, session_id=state.session_id)
+        return self._classifier.classify(
+            _message_content_to_text(last_message.content),
+            session_id=state.session_id,
+        )

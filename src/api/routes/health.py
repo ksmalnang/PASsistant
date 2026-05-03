@@ -49,7 +49,7 @@ def _check_qdrant_health() -> DependencyHealthResponse:
         client = QdrantClient(
             url=settings.QDRANT_URL,
             api_key=settings.QDRANT_API_KEY,
-            timeout=1.0,
+            timeout=1,
         )
         client.get_collections()
         return DependencyHealthResponse(

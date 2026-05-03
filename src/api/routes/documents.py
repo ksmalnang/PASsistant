@@ -2,9 +2,9 @@
 
 import logging
 import mimetypes
-from typing import Annotated
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, File, HTTPException, UploadFile, status
 
 from src.api.models import (
     DocumentIngestionResponse,
@@ -23,7 +23,7 @@ UploadFiles = Annotated[
     ),
 ]
 PDF_MIME_ALIASES = {"application/x-pdf", "application/acrobat"}
-DOCUMENT_ERROR_RESPONSES = {
+DOCUMENT_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     status.HTTP_400_BAD_REQUEST: {
         "model": ErrorResponse,
         "description": "The upload request is missing a required file payload.",
@@ -61,8 +61,9 @@ def _normalize_mime_type(content_type: str | None, filename: str | None) -> str 
 
 def _resolve_upload_size(file: UploadFile) -> int:
     """Resolve upload size without consuming the request body stream."""
-    if getattr(file, "size", None) is not None:
-        return int(file.size)
+    size = getattr(file, "size", None)
+    if size is not None:
+        return int(size)
 
     stream = file.file
     current_position = stream.tell()

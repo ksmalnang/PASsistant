@@ -4,6 +4,7 @@ import logging
 import mimetypes
 import re
 import uuid
+from collections.abc import Container
 from pathlib import Path
 
 from src.config import get_settings
@@ -26,11 +27,26 @@ class DocumentTools:
         ),
         (
             DocumentType.ID_CARD,
-            ("id card", "identity", "ktp", "passport", "license", "student card", "kartu mahasiswa"),
+            (
+                "id card",
+                "identity",
+                "ktp",
+                "passport",
+                "license",
+                "student card",
+                "kartu mahasiswa",
+            ),
         ),
         (
             DocumentType.APPLICATION,
-            ("application", "apply", "admission", "registration form", "formulir pendaftaran", "form"),
+            (
+                "application",
+                "apply",
+                "admission",
+                "registration form",
+                "formulir pendaftaran",
+                "form",
+            ),
         ),
         (
             DocumentType.RECOMMENDATION,
@@ -118,7 +134,7 @@ class DocumentTools:
     def _matches_keywords(
         self,
         normalized_name: str,
-        tokens: set[str],
+        tokens: Container[str],
         keywords: tuple[str, ...],
     ) -> bool:
         """Return whether a normalized filename matches any keyword or phrase."""
