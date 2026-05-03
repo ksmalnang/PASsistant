@@ -109,7 +109,7 @@ def check_retrieval_results(
     return "fallback_response"
 
 
-def check_errors(state: AgentState) -> Literal["handle_error", END]:
+def check_errors(state: AgentState) -> str:
     """
     Check if there are errors that need handling.
 

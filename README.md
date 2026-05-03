@@ -193,7 +193,7 @@ ruff format .
 ruff check .
 
 # Type check
-mypy src/
+basedpyright src/
 ```
 
 ---

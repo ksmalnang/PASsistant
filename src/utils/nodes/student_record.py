@@ -16,6 +16,23 @@ from src.utils.tools import StudentTools
 logger = logging.getLogger(__name__)
 
 
+def _message_content_to_text(content: object) -> str:
+    """Normalize LangChain message content into plain text."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if text is not None:
+                    parts.append(str(text))
+        return "\n".join(part for part in parts if part)
+    return str(content)
+
+
 class StudentRecordNode:
     """
     Handles student-record creation and direct lookup workflows.
@@ -33,7 +50,7 @@ class StudentRecordNode:
         service: StudentRecordService | None = None,
         llm_provider: LLMProvider | None = None,
     ):
-        base_tools = repository or fallback_extractor or StudentTools()
+        base_tools = StudentTools()
         resolved_repository = repository or base_tools
         resolved_extractor = fallback_extractor or base_tools
         self._service = service or StudentRecordService(
@@ -57,7 +74,9 @@ class StudentRecordNode:
             State updates with record operation results
         """
         intent = state.current_intent
-        last_message = state.messages[-1].content if state.messages else ""
+        last_message = (
+            _message_content_to_text(state.messages[-1].content) if state.messages else ""
+        )
 
         try:
             return self._service.handle(state, intent, last_message)

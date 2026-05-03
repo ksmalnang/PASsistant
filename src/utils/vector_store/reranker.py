@@ -81,7 +81,7 @@ class RemoteReranker:
         if has_indexes:
             if any(score is None for score in indexed_scores):
                 raise RuntimeError("Reranker response did not include a score for every document")
-            return [float(score) for score in indexed_scores]
+            return [float(score) for score in indexed_scores if score is not None]
 
         return ordered_scores
 

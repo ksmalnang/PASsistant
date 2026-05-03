@@ -1,8 +1,9 @@
 """Qdrant collection lifecycle and client-compatibility helpers."""
 
 import logging
-from typing import Any
+from typing import Any, Literal
 
+from qdrant_client import QdrantClient
 from qdrant_client.http.models import (
     Distance,
     Modifier,
@@ -11,10 +12,19 @@ from qdrant_client.http.models import (
 )
 
 logger = logging.getLogger(__name__)
+RetrievalStrategy = Literal["similarity", "rrf", "reranker"]
 
 
 class CollectionOperations:
     """Collection lifecycle helpers shared by vector-store operations."""
+
+    client: QdrantClient
+    collection_name: str
+    vector_size: int
+    bm25_vector_name: str
+    bm25_vectors_enabled: bool | None
+    retrieval_strategy: RetrievalStrategy
+    _rrf_warning_emitted: bool
 
     def ensure_collection(self) -> None:
         """Create the collection if it does not exist and detect BM25-vector support."""
@@ -111,10 +121,16 @@ class CollectionOperations:
             raise TypeError(f"Unsupported query_points response type: {type(response)!r}")
 
         if kwargs.get("using") or kwargs.get("prefetch"):
-            raise RuntimeError("Hybrid retrieval requires a qdrant-client with query_points support.")
+            raise RuntimeError(
+                "Hybrid retrieval requires a qdrant-client with query_points support."
+            )
+
+        legacy_search = getattr(self.client, "search", None)
+        if legacy_search is None:
+            raise RuntimeError("This qdrant-client build does not expose a compatible search API.")
 
         return list(
-            self.client.search(
+            legacy_search(
                 collection_name=kwargs["collection_name"],
                 query_vector=kwargs["query"],
                 query_filter=kwargs.get("query_filter"),

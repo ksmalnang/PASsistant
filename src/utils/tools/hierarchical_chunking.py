@@ -569,7 +569,15 @@ class HierarchicalChunker:
                 if normalized_bbox is None:
                     continue
 
-                dedupe_key = (page_index, tuple(normalized_bbox))
+                dedupe_key = (
+                    page_index,
+                    (
+                        float(normalized_bbox[0]),
+                        float(normalized_bbox[1]),
+                        float(normalized_bbox[2]),
+                        float(normalized_bbox[3]),
+                    ),
+                )
                 if dedupe_key in seen:
                     continue
                 seen.add(dedupe_key)

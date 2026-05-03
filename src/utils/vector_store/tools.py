@@ -4,13 +4,14 @@ from typing import Any
 
 from langchain_core.embeddings import Embeddings
 from langchain_openai import OpenAIEmbeddings
+from pydantic import SecretStr
 from qdrant_client import QdrantClient
 
 from src.config import get_settings
 from src.utils.cache import RedisCache, get_cache
 from src.utils.tools.hierarchical_chunking import HierarchicalChunker
 from src.utils.tools.parent_store import ParentChunkStore
-from src.utils.vector_store.bm25 import BM25VectorOperations, TOKEN_PATTERN
+from src.utils.vector_store.bm25 import TOKEN_PATTERN, BM25VectorOperations
 from src.utils.vector_store.collection import CollectionOperations
 from src.utils.vector_store.indexing import IndexingOperations
 from src.utils.vector_store.reranker import RemoteReranker
@@ -70,7 +71,7 @@ class VectorStoreTools(
                 raise ValueError("OPENAI_API_KEY is required for embeddings")
             self.embeddings = OpenAIEmbeddings(
                 model=self.embedding_model,
-                openai_api_key=self.openai_api_key,
+                api_key=SecretStr(self.openai_api_key),
                 base_url=self.openai_base_url,
             )
         return self.embeddings

@@ -1,6 +1,7 @@
 """Chat endpoints."""
 
 import logging
+from typing import Any
 
 from fastapi import APIRouter, File, HTTPException, UploadFile, status
 
@@ -10,7 +11,7 @@ from src.api.services import handle_chat_message, handle_chat_upload
 logger = logging.getLogger(__name__)
 router = APIRouter()
 UPLOAD_FILE_PARAM = File(...)
-CHAT_ERROR_RESPONSES = {
+CHAT_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     status.HTTP_400_BAD_REQUEST: {
         "model": ErrorResponse,
         "description": "The request payload is invalid.",

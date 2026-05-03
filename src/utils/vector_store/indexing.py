@@ -2,17 +2,38 @@
 
 import logging
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from langchain_core.embeddings import Embeddings
+from qdrant_client import QdrantClient
 from qdrant_client.http.models import FieldCondition, Filter, MatchValue, PointStruct
 
+from src.utils.cache import RedisCache
 from src.utils.state import DocumentUpload
+from src.utils.tools.hierarchical_chunking import HierarchicalChunker
+from src.utils.tools.parent_store import ParentChunkStore
 
 logger = logging.getLogger(__name__)
 
 
 class IndexingOperations:
     """Document chunk storage and deletion helpers."""
+
+    chunker: HierarchicalChunker
+    embedding_model: str
+    bm25_vector_name: str
+    client: QdrantClient
+    collection_name: str
+    cache: RedisCache
+    parent_store: ParentChunkStore
+
+    if TYPE_CHECKING:
+
+        def _get_embeddings(self) -> Embeddings: ...
+        def _ensure_collection_for_vector_size(self, vector_size: int) -> None: ...
+        def ensure_collection(self) -> None: ...
+        def _supports_bm25_vectors(self) -> bool: ...
+        def _build_bm25_vector(self, text: str, *, is_query: bool = False) -> Any: ...
 
     async def store_document_chunks(
         self,

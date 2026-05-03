@@ -14,6 +14,9 @@ class BM25VectorOperations:
 
     _BM25_MODEL_NAME = BM25_MODEL_NAME
     _BM25_DISABLE_STEMMER = BM25_DISABLE_STEMMER
+    _TOKEN_PATTERN: re.Pattern[str]
+    _RRF_RANK_CONSTANT: int
+    _bm25_text_embedder: Any
 
     def _get_bm25_cache_signature(self) -> str:
         """Return the BM25 settings that affect retrieval behavior."""
