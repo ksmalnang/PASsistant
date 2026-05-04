@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 from qdrant_client.http.models import SparseVector
 
+from src.services.ingestion_health import IngestionHealthCheck
 from src.services.response_generation import CitationBuilder, ResponseContextBuilder
 from src.utils.state import DocumentType, DocumentUpload
 from src.utils.tools.hierarchical_chunking import HierarchicalChunker
@@ -200,6 +201,92 @@ def test_chunker_cleans_toc_leader_suffix_from_heading_title():
         "Peta Kurikulum Berdasarkan CPL PRODI",
         2,
     )
+
+
+def test_roman_decimal_heading_detection():
+    """Roman numeral academic headings should map to the right structural depth."""
+    chunker = HierarchicalChunker()
+    test_cases = [
+        ("IV.9.3. Evaluasi Kinerja akademik dan Eksekusi Akhir Masa Studi", "subsection"),
+        ("III.2.1 Ketentuan Cuti Akademik", "subsection"),
+        ("IV.9 Evaluasi Akademik", "section"),
+        ("II.4 Registrasi Mahasiswa", "section"),
+        ("IV Evaluasi Akademik", "chapter"),
+        ("I Pendahuluan", "chapter"),
+    ]
+
+    for text, expected_type in test_cases:
+        result = chunker._detect_heading(text)
+        assert result is not None, f"Failed to detect heading: {text}"
+        assert result[0] == expected_type
+
+
+def test_wadek_style_document_produces_chunks():
+    """Roman-numbered academic-guide structures should not collapse into one appendix chunk."""
+    chunker = HierarchicalChunker(parent_max_chars=5000, child_max_chars=5000)
+    document = _build_document(
+        """
+        I Pendahuluan
+
+        Penjelasan umum.
+
+        I.1 Tujuan
+
+        Dokumen ini menjelaskan ketentuan akademik.
+
+        II Status Mahasiswa
+
+        II.4 Registrasi Mahasiswa
+
+        Heregistrasi dilakukan setiap semester.
+
+        III Ketentuan Akademik
+
+        III.2 Cuti Akademik
+
+        Mahasiswa wajib mengajukan cuti resmi.
+
+        III.2.1 Persyaratan Cuti Akademik
+
+        Persyaratan cuti akademik dijelaskan pada bagian ini.
+
+        IV Evaluasi Akademik
+
+        IV.9 Evaluasi Kinerja Akademik
+
+        Evaluasi dilakukan secara berkala.
+
+        IV.9.3. Evaluasi Kinerja akademik dan Eksekusi Akhir Masa Studi
+
+        Mahasiswa yang tidak aktif selama 4 semester berturut-turut tanpa cuti resmi
+        dapat dikenakan eksekusi akhir masa studi.
+
+        IV.9.4 Sanksi Akademik Lainnya
+
+        Ketentuan sanksi lain.
+        """.strip()
+    )
+
+    structured = chunker.chunk_document(document)
+
+    assert len(structured.parent_chunks) >= 5
+    assert any(
+        parent.section_id.endswith("subbagian_iv_9_3") for parent in structured.parent_chunks
+    )
+
+
+def test_ingestion_health_flags_sparse_indexing():
+    """Health check should surface obviously broken low-density indexing output."""
+    chunker = HierarchicalChunker()
+    document = _build_document("Paragraf umum tanpa struktur heading yang jelas.")
+    document.num_pages = 20
+
+    structured = chunker.chunk_document(document)
+    report = IngestionHealthCheck().validate(document, structured)
+
+    issue_codes = {issue.code for issue in report.issues}
+    assert "LOW_CHUNK_DENSITY" in issue_codes
+    assert "TOO_FEW_CHILD_CHUNKS" in issue_codes
 
 
 def test_html_table_splits_into_table_child_parts():
@@ -731,6 +818,73 @@ async def test_indexing_rolls_back_vectors_when_parent_store_fails():
     assert indexer.client.deleted_documents == 2
     assert indexer.parent_store.put_calls == 1
     assert indexer.parent_store.deleted_documents == ["doc-001", "doc-001"]
+
+
+@pytest.mark.asyncio
+async def test_indexing_batches_large_upserts():
+    """Large indexing jobs should be split into multiple Qdrant upsert requests."""
+    document = _build_document(
+        "\n\n".join(
+            [f"Pasal {index} " + ("Ketentuan akademik " * 120) for index in range(1, 7)]
+        )
+    )
+
+    class FakeEmbeddings:
+        async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
+            return [[0.1, 0.2] for _ in texts]
+
+    class FakeParentStore:
+        def put_many(self, parents: list[dict[str, object]]) -> None:
+            assert parents
+
+        def delete_document(self, document_id: str) -> None:
+            assert document_id == "doc-001"
+
+    class FakeCache:
+        def delete_prefix(self, prefix: str) -> None:
+            assert prefix == "search:"
+
+    class FakeClient:
+        def __init__(self):
+            self.upsert_batches: list[int] = []
+
+        def upsert(self, collection_name: str, points: list[object]) -> None:
+            assert collection_name == "documents"
+            self.upsert_batches.append(len(points))
+
+        def delete(self, collection_name: str, points_selector: object) -> None:
+            assert collection_name == "documents"
+
+    class FakeIndexer(IndexingOperations):
+        MAX_UPSERT_PAYLOAD_BYTES = 12000
+
+        def __init__(self):
+            self.chunker = HierarchicalChunker(child_max_chars=400, child_overlap_chars=0)
+            self.embedding_model = "embedding-test"
+            self.collection_name = "documents"
+            self.client = FakeClient()
+            self.parent_store = FakeParentStore()
+            self.cache = FakeCache()
+
+        def _get_embeddings(self) -> FakeEmbeddings:
+            return FakeEmbeddings()
+
+        def _ensure_collection_for_vector_size(self, vector_size: int) -> None:
+            assert vector_size == 2
+
+        def ensure_collection(self) -> None:
+            return None
+
+        def _supports_bm25_vectors(self) -> bool:
+            return False
+
+    indexer = FakeIndexer()
+
+    chunk_ids = await indexer.store_document_chunks(document)
+
+    assert chunk_ids
+    assert len(indexer.client.upsert_batches) > 1
+    assert sum(indexer.client.upsert_batches) == len(chunk_ids)
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from langchain_core.messages import HumanMessage
@@ -56,6 +57,42 @@ class IntentClassifier:
         "mata kuliah",
         "rps",
         "dokumen",
+        "cuti akademik",
+        "cuti kuliah",
+        "cuti",
+        "absen",
+        "tidak aktif",
+        "tidak hadir",
+        "masa studi",
+        "batas studi",
+        "perpanjangan studi",
+        "drop out",
+        "dikeluarkan",
+        "status mahasiswa",
+        "sanksi akademik",
+        "sanksi",
+        "evaluasi akademik",
+        "perkuliahan",
+        "semester",
+        "heregistrasi",
+        "spp",
+        "pembayaran",
+        "nilai",
+        "ipk",
+        "ip semester",
+        "krs",
+        "khs",
+        "transkrip",
+        "wisuda",
+        "skripsi",
+        "sidang",
+        "bimbingan",
+        "dosen pembimbing",
+        "pembimbing akademik",
+        "pedoman akademik",
+        "peraturan akademik",
+        "tata tertib",
+        "kemahasiswaan",
     )
     student_record_keywords = (
         "my gpa",
@@ -89,16 +126,16 @@ class IntentClassifier:
         """Return routing metadata for a user message."""
         user_text_lower = user_text.lower()
 
-        if any(keyword in user_text_lower for keyword in self.upload_keywords):
+        if self._keyword_matches(user_text_lower, self.upload_keywords):
             return {
                 "current_intent": "upload_document",
                 "requires_upload": True,
             }
 
-        if any(keyword in user_text_lower for keyword in self.academic_service_keywords):
+        if self._keyword_matches(user_text_lower, self.academic_service_keywords):
             return self._build_retrieval_intent("query_document", user_text)
 
-        if any(keyword in user_text_lower for keyword in self.student_record_keywords):
+        if self._keyword_matches(user_text_lower, self.student_record_keywords):
             return self._build_retrieval_intent("query_student", user_text)
 
         try:
@@ -137,3 +174,14 @@ class IntentClassifier:
             "requires_retrieval": True,
             "retrieval_query": user_text,
         }
+
+    def _keyword_matches(self, text: str, keywords: tuple[str, ...]) -> bool:
+        """Match short keywords with word boundaries and longer ones by inclusion."""
+        for keyword in keywords:
+            if len(keyword) <= 4:
+                if re.search(rf"\b{re.escape(keyword)}\b", text):
+                    return True
+                continue
+            if keyword in text:
+                return True
+        return False

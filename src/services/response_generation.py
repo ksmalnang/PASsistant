@@ -50,6 +50,19 @@ class ResponseContextBuilder:
                 f"\nLast processed document: {title} "
                 f"(status: {last_doc.processing_status.value})"
             )
+            if last_doc.quality_warning:
+                context_parts.append(
+                    f"System note: ingestion quality warning for the last document: {last_doc.quality_warning}"
+                )
+
+        if state.quality_warning:
+            context_parts.append(f"System note: {state.quality_warning}")
+
+        if state.retrieval_warning:
+            context_parts.append(f"System note: {state.retrieval_warning}")
+
+        if state.response_confidence:
+            context_parts.append(f"Retrieval confidence: {state.response_confidence:.2f}")
 
         if state.error:
             context_parts.append(f"\nSystem note: {state.error}")
@@ -417,13 +430,21 @@ class ResponseGenerationService:
             citation = f"{top_chunk['filename']}"
             if breadcrumb:
                 citation = f"{citation} [{breadcrumb}]"
+            if state.response_confidence and state.response_confidence < 0.45:
+                return (
+                    "I found some document excerpts, but they may not directly answer the question. "
+                    "The indexed context looks weak or off-topic."
+                )
             return f"Based on {citation}, I found: {top_chunk['text'][:300]}"
         if state.processed_documents:
             last_doc = state.processed_documents[-1]
-            return (
+            response = (
                 f"I processed {last_doc.filename} "
                 f"with status {last_doc.processing_status.value}."
             )
+            if last_doc.quality_warning:
+                response = f"{response} Warning: {last_doc.quality_warning}"
+            return response
         if state.current_student_id and state.current_student_id in state.student_records:
             student = state.student_records[state.current_student_id]
             return f"I found the record for {student.full_name or student.student_id}."

@@ -61,6 +61,13 @@ class DocumentProcessingNode:
             "processed_documents": state.processed_documents + result.processed_documents,
             "pending_documents": [],
         }
+        quality_warnings = [
+            document.quality_warning
+            for document in result.processed_documents
+            if document.quality_warning
+        ]
+        if quality_warnings:
+            updates["quality_warning"] = " ; ".join(quality_warnings)
         if result.errors:
             updates["error"] = "; ".join(result.errors)
         return updates

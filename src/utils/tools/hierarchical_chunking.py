@@ -56,6 +56,7 @@ class HierarchicalDocument:
     root: StructureNode
     parent_chunks: list[ParentChunk]
     child_chunks: list[ChildChunk]
+    recognized_headings: list[str] = field(default_factory=list)
 
 
 class HierarchicalChunker:
@@ -72,21 +73,48 @@ class HierarchicalChunker:
     _HTML_TABLE_MARKER = re.compile(r"<\s*/?\s*(?:table|tr|td|th)\b", re.IGNORECASE)
     _HTML_ROW_SPLIT = re.compile(r"(?=<\s*tr\b)", re.IGNORECASE)
     _DOTTED_LEADER_SUFFIX = re.compile(r"\s*\.{2,}\s*\d+\s*$")
-    _HEADING_PATTERNS: tuple[tuple[str, re.Pattern[str], int], ...] = (
+    _HEADING_PATTERNS: tuple[tuple[str, re.Pattern[str], int, int, int], ...] = (
+        (
+            "subsection",
+            re.compile(r"^(?:#+\s*)?([IVXLCDM]+(?:\.\d+){2,})\.?\s+(.+)$"),
+            3,
+            1,
+            2,
+        ),
+        (
+            "section",
+            re.compile(r"^(?:#+\s*)?([IVXLCDM]+\.\d+)\.?\s+(.+)$"),
+            2,
+            1,
+            2,
+        ),
+        (
+            "chapter",
+            re.compile(r"^(?:#+\s*)?([IVXLCDM]+)\s+([A-Z].+)$"),
+            1,
+            1,
+            2,
+        ),
         (
             "chapter",
             re.compile(r"^(?:#+\s*)?([0-9]+)\s+(.+)$"),
             1,
+            1,
+            2,
         ),
         (
             "section",
             re.compile(r"^(?:#+\s*)?([0-9]+\.[0-9]+)\s+(.+)$"),
+            2,
+            1,
             2,
         ),
         (
             "subsection",
             re.compile(r"^(?:#+\s*)?([0-9]+\.[0-9]+\.[0-9]+)\s+(.+)$"),
             3,
+            1,
+            2,
         ),
         (
             "appendix",
@@ -95,6 +123,8 @@ class HierarchicalChunker:
                 re.IGNORECASE,
             ),
             1,
+            2,
+            3,
         ),
         (
             "chapter",
@@ -103,6 +133,8 @@ class HierarchicalChunker:
                 re.IGNORECASE,
             ),
             1,
+            2,
+            3,
         ),
         (
             "section",
@@ -111,6 +143,8 @@ class HierarchicalChunker:
                 re.IGNORECASE,
             ),
             2,
+            2,
+            3,
         ),
         (
             "subsection",
@@ -118,6 +152,8 @@ class HierarchicalChunker:
                 r"^(?:#+\s*)?(Bagian|Subbagian|Paragraf|Paragraph)\s+([A-Za-z0-9.\-]+)\b[:.\-]?\s*(.*)$",
                 re.IGNORECASE,
             ),
+            3,
+            2,
             3,
         ),
         (
@@ -127,6 +163,8 @@ class HierarchicalChunker:
                 re.IGNORECASE,
             ),
             4,
+            2,
+            3,
         ),
     )
     _PASAL_REF = re.compile(r"\bPasal\s+([A-Za-z0-9.\-]+)", re.IGNORECASE)
@@ -225,6 +263,11 @@ class HierarchicalChunker:
             root=root,
             parent_chunks=parent_chunks,
             child_chunks=child_chunks,
+            recognized_headings=[
+                node.title
+                for node in self._walk(root)
+                if node.node_type in {"chapter", "section", "subsection", "appendix", "clause"}
+            ],
         )
 
     def _resolve_title(self, document: DocumentUpload) -> str:
@@ -327,16 +370,12 @@ class HierarchicalChunker:
         """Classify a block as a structural heading when it matches known markers."""
         block_lines = block.splitlines()
         first_line = self._normalize_heading_candidate(block_lines[0])
-        for node_type, pattern, depth in self._HEADING_PATTERNS:
+        for node_type, pattern, depth, identifier_group, title_group in self._HEADING_PATTERNS:
             match = pattern.match(first_line)
             if not match:
                 continue
-            if node_type in {"chapter", "section", "subsection"} and pattern.pattern.startswith("^(?:#+\\s*)?([0-9]"):
-                identifier = self._slug_token(match.group(1)) or node_type
-                inline_title = match.group(2).strip()
-            else:
-                identifier = self._slug_token(match.group(2)) or node_type
-                inline_title = match.group(3).strip() if match.lastindex and match.lastindex >= 3 else ""
+            identifier = self._slug_token(match.group(identifier_group)) or node_type
+            inline_title = match.group(title_group).strip()
             remainder_parts: list[str] = []
             if len(block_lines) > 1:
                 remainder_parts.append("\n".join(block_lines[1:]).strip())

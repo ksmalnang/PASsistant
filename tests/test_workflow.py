@@ -70,6 +70,25 @@ class TestRouterNode:
         assert result["current_intent"] == "query_document"
         assert result["requires_retrieval"] is True
 
+    def test_router_detects_indonesian_academic_policy_question(self):
+        """Policy questions with Indonesian academic terms should skip LLM fallback."""
+        router = RouterNode()
+        state = AgentState(
+            messages=[
+                HumanMessage(
+                    content=(
+                        "Apa yang akan terjadi jika saya absen atau tidak aktif mengikuti "
+                        "perkuliahan selama 4 semester berturut-turut tanpa mengajukan cuti resmi?"
+                    )
+                )
+            ]
+        )
+
+        result = router.run(state)
+
+        assert result["current_intent"] == "query_document"
+        assert result["requires_retrieval"] is True
+
     def test_router_detects_general_chat(self):
         """Router should classify general conversation."""
         router = RouterNode()

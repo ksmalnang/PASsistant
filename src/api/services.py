@@ -149,6 +149,7 @@ class DocumentRouteService:
             parsed_pages=document.parsed_pages,
             failed_pages=list(document.failed_pages or []),
             ocr_warnings=list(document.ocr_warnings or []),
+            quality_warning=document.quality_warning,
             error=document.processing_error,
         )
 
