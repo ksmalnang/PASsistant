@@ -49,6 +49,16 @@ class Settings(BaseSettings):
         description="Embedding model for vector search",
     )
 
+    # --- RAGAS Evaluation ---
+    RAGAS_LLM_MODEL: str = Field(
+        default="",
+        description="LLM model for RAGAS evaluator judge (falls back to LLM_MODEL if empty)",
+    )
+    RAGAS_EMBEDDING_MODEL: str = Field(
+        default="",
+        description="Embedding model for RAGAS semantic similarity metrics (falls back to EMBEDDING_MODEL if empty)",
+    )
+
     # --- GLM-4 OCR Configuration (Zhipu AI) ---
     ZHIPU_API_KEY: Optional[str] = Field(default=None, description="Zhipu AI API key for GLM-4 OCR")
     ZHIPU_BASE_URL: str = Field(default="https://open.bigmodel.cn/api/paas/v4")
