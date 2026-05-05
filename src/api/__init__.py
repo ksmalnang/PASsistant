@@ -20,6 +20,7 @@ from fastapi.openapi.utils import get_openapi
 
 from src.api.routes.router import router
 from src.config import build_logging_config, configure_logging, get_settings
+from src.guardrails.rate_limit import InMemoryRateLimiter
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -45,12 +46,18 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+allowed_origins = settings.CORS_ALLOWED_ORIGINS
+if settings.is_production and allowed_origins == ["*"]:
+    allowed_origins = []
+
+app.state.rate_limiter = InMemoryRateLimiter(limit=settings.RATE_LIMIT_PER_MINUTE)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 app.include_router(router)
 

@@ -5,9 +5,11 @@ import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from src.api.sessions import get_or_create_agent
+from src.guardrails.input_guard import InputGuard
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+_guard = InputGuard()
 
 
 @router.websocket("/ws/{session_id}")
@@ -19,7 +21,26 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
     try:
         while True:
             data = await websocket.receive_text()
-            async for update in agent.stream_chat(data):
+            if not websocket.app.state.rate_limiter.allow(
+                getattr(getattr(websocket, "client", None), "host", None) or "unknown"
+            ):
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "data": "Rate limit exceeded. Please try again later.",
+                    }
+                )
+                continue
+            guard_result = _guard.validate(data)
+            if not guard_result.safe:
+                await websocket.send_json(
+                    {
+                        "type": "error",
+                        "data": f"Message rejected: {guard_result.reason}",
+                    }
+                )
+                continue
+            async for update in agent.stream_chat(guard_result.sanitized or data.strip()):
                 await websocket.send_json(
                     {
                         "type": "stream_update",

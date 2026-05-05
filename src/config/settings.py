@@ -114,6 +114,8 @@ class Settings(BaseSettings):
         description="RFC 5424 facility code. Defaults to local0.",
     )
     DATA_DIR: Path = Field(default=Path("data"))
+    CORS_ALLOWED_ORIGINS: list[str] = Field(default_factory=lambda: ["*"])
+    RATE_LIMIT_PER_MINUTE: int = Field(default=20)
 
     # --- Telegram Bot ---
     TELEGRAM_BOT_TOKEN: Optional[str] = Field(default=None)
