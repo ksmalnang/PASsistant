@@ -8,7 +8,7 @@ from src.utils.state import Citation
 class ChatRequest(BaseModel):
     """Chat request payload."""
 
-    message: str = Field(description="User message text")
+    message: str = Field(description="User message text", min_length=1, max_length=4000)
     session_id: str | None = Field(
         default=None,
         description="Session identifier for continuity",

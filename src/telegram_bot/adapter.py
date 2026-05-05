@@ -9,6 +9,7 @@ from telegram import Bot, Message, Update
 from telegram.constants import ChatAction
 
 from src.config.settings import Settings
+from src.guardrails.input_guard import InputGuard
 from src.telegram_bot.files import (
     TelegramFileDownloadError,
     TelegramFileError,
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
     from src.api.services import ChatRouteService
 
 logger = logging.getLogger(__name__)
+_guard = InputGuard()
 
 WELCOME_MESSAGE = (
     "Halo! 👋 Butuh bantuan soal layanan akademik atau data mahasiswa? Saya juga bisa membaca PDF atau gambar yang Anda kirim, "
@@ -30,6 +32,9 @@ WELCOME_MESSAGE = (
 )
 UNSUPPORTED_MESSAGE = "Oops! 😅 Saat ini aku cuma bisa baca teks, PDF, atau gambar ya. 📄"
 GENERIC_ERROR_MESSAGE = "Waduh, lagi error nih 😅 Coba kirim ulang sebentar lagi ya!"
+REJECTED_MESSAGE = (
+    "Permintaan itu tidak dapat diproses 🙂 Coba pertanyaan lain yang lebih relevan ya."
+)
 
 
 class TelegramBotAdapter:
@@ -56,9 +61,13 @@ class TelegramBotAdapter:
                 return
 
             if message.text and message.text.strip():
+                guard_result = _guard.validate(message.text.strip())
+                if not guard_result.safe:
+                    await self._send_text(message.chat.id, REJECTED_MESSAGE)
+                    return
                 await self._send_typing(message.chat.id)
                 response = await self._chat_service.handle_chat_message(
-                    message=message.text.strip(),
+                    message=guard_result.sanitized or message.text.strip(),
                     session_id=session_id,
                 )
                 await self._send_chat_response(
@@ -74,9 +83,13 @@ class TelegramBotAdapter:
             files = await extract_telegram_files(message, self._bot, self._settings)
             if files:
                 prompt = get_effective_prompt(message)
+                guard_result = _guard.validate(prompt)
+                if not guard_result.safe:
+                    await self._send_text(message.chat.id, REJECTED_MESSAGE)
+                    return
                 await self._send_typing(message.chat.id)
                 response = await self._chat_service.handle_chat_upload(
-                    message=prompt,
+                    message=guard_result.sanitized or prompt.strip(),
                     files=files,
                     session_id=session_id,
                 )

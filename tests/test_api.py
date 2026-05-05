@@ -28,6 +28,7 @@ def test_upload_documents_returns_created(monkeypatch):
                 "parsed_pages": None,
                 "failed_pages": [],
                 "ocr_warnings": [],
+                "quality_warning": None,
                 "error": None,
             }
         ]
@@ -53,13 +54,14 @@ def test_upload_documents_returns_created(monkeypatch):
             "status": "completed",
             "chunks_stored": 2,
             "parent_chunks_stored": 1,
-            "document_title": "Knowledge Base",
-            "parsed_pages": None,
-            "failed_pages": [],
-            "ocr_warnings": [],
-            "error": None,
-        }
-    ]
+                "document_title": "Knowledge Base",
+                "parsed_pages": None,
+                "failed_pages": [],
+                "ocr_warnings": [],
+                "quality_warning": None,
+                "error": None,
+            }
+        ]
 
 
 def test_upload_documents_rejects_unsupported_mime_type():
@@ -132,13 +134,14 @@ def test_ingest_knowledge_base_documents_success(monkeypatch):
             "status": "completed",
             "chunks_stored": 2,
             "parent_chunks_stored": 1,
-            "document_title": "Knowledge Base",
-            "parsed_pages": None,
-            "failed_pages": [],
-            "ocr_warnings": [],
-            "error": None,
-        }
-    ]
+                "document_title": "Knowledge Base",
+                "parsed_pages": None,
+                "failed_pages": [],
+                "ocr_warnings": [],
+                "quality_warning": None,
+                "error": None,
+            }
+        ]
 
 
 def test_ingest_knowledge_base_documents_failure(monkeypatch):
@@ -166,13 +169,14 @@ def test_ingest_knowledge_base_documents_failure(monkeypatch):
             "status": "failed",
             "chunks_stored": 0,
             "parent_chunks_stored": 0,
-            "document_title": None,
-            "parsed_pages": None,
-            "failed_pages": [],
-            "ocr_warnings": [],
-            "error": "vector store unavailable",
-        }
-    ]
+                "document_title": None,
+                "parsed_pages": None,
+                "failed_pages": [],
+                "ocr_warnings": [],
+                "quality_warning": None,
+                "error": "vector store unavailable",
+            }
+        ]
 
 
 def test_ingest_knowledge_base_documents_missing_files_returns_400():
