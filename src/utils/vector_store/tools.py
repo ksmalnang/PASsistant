@@ -8,6 +8,7 @@ from pydantic import SecretStr
 from qdrant_client import QdrantClient
 
 from src.config import get_settings
+from src.services.ingestion_health import IngestionHealthCheck
 from src.utils.cache import RedisCache, get_cache
 from src.utils.tools.hierarchical_chunking import HierarchicalChunker
 from src.utils.tools.parent_store import ParentChunkStore
@@ -59,6 +60,7 @@ class VectorStoreTools(
         self.reranker: Any | None = None
         self.cache: RedisCache = get_cache()
         self.chunker = HierarchicalChunker()
+        self.ingestion_health_check = IngestionHealthCheck()
         self.parent_store = ParentChunkStore(cache=self.cache)
         self.bm25_vector_name = self._BM25_VECTOR_NAME
         self.bm25_vectors_enabled: bool | None = None

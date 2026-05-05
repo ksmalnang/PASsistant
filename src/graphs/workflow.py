@@ -121,6 +121,22 @@ def check_errors(state: AgentState) -> str:
     return END
 
 
+def build_fallback_response(state: AgentState) -> dict:
+    """Return an honest fallback when retrieval produced no usable context."""
+    detail = (
+        state.retrieval_warning
+        or "I couldn't find relevant information in the indexed academic documents."
+    )
+    content = (
+        f"{detail} Try rephrasing the question, upload the specific document, "
+        "or contact the academic office for confirmation."
+    )
+    return {
+        "messages": [{"role": "assistant", "content": content}],
+        "draft_response": content,
+    }
+
+
 # =============================================================================
 # Workflow Creation
 # =============================================================================
@@ -211,20 +227,7 @@ def create_workflow(nodes: WorkflowNodes | None = None) -> StateGraph:
     workflow.add_node("handle_error", resolved_nodes.error_handler.run)
 
     # Fallback response when no retrieval results
-    workflow.add_node(
-        "fallback_response",
-        lambda state: {
-            "messages": [
-                {
-                    "role": "assistant",
-                    "content": "I couldn't find relevant information in the academic-service "
-                    "documents or uploaded files. Could you try rephrasing your question or "
-                    "upload a relevant document?",
-                }
-            ],
-            "draft_response": "No relevant information found in academic-service documents.",
-        },
-    )
+    workflow.add_node("fallback_response", build_fallback_response)
 
     # ====================================================================
     # Define Edges

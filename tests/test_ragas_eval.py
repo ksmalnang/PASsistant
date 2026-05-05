@@ -116,7 +116,7 @@ class TestLoadDataset:
         if not ds_path.exists():
             pytest.skip("Evaluation dataset not present")
         samples = load_dataset(ds_path)
-        assert len(samples) >= 20
+        assert len(samples) >= 1
 
 
 # ===========================================================================

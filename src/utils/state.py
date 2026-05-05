@@ -66,6 +66,8 @@ class DocumentUpload(BaseModel):
     text_quality_score: Optional[float] = Field(default=None)
     processing_status: ProcessingStatus = Field(default=ProcessingStatus.PENDING)
     processing_error: Optional[str] = Field(default=None)
+    quality_warning: Optional[str] = Field(default=None)
+    ingestion_report: Optional[dict[str, Any]] = Field(default=None)
 
     # Layout parsing results
     num_pages: Optional[int] = Field(default=None)
@@ -163,6 +165,8 @@ class AgentState(BaseModel):
     # --- Retrieved Context ---
     retrieved_chunks: list[dict[str, Any]] = Field(default_factory=list)
     retrieval_query: Optional[str] = Field(default=None)
+    retrieval_warning: Optional[str] = Field(default=None)
+    quality_warning: Optional[str] = Field(default=None)
 
     # --- Response Generation ---
     draft_response: Optional[str] = Field(default=None)

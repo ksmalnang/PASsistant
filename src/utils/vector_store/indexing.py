@@ -1,5 +1,6 @@
 """Document indexing operations for the vector store."""
 
+import json
 import logging
 import uuid
 from typing import TYPE_CHECKING, Any
@@ -8,6 +9,7 @@ from langchain_core.embeddings import Embeddings
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import FieldCondition, Filter, MatchValue, PointStruct
 
+from src.services.ingestion_health import IngestionHealthCheck
 from src.utils.cache import RedisCache
 from src.utils.state import DocumentUpload
 from src.utils.tools.hierarchical_chunking import HierarchicalChunker
@@ -19,6 +21,9 @@ logger = logging.getLogger(__name__)
 class IndexingOperations:
     """Document chunk storage and deletion helpers."""
 
+    MAX_UPSERT_PAYLOAD_BYTES = 28 * 1024 * 1024
+    _UPSERT_BATCH_OVERHEAD_BYTES = 4096
+
     chunker: HierarchicalChunker
     embedding_model: str
     bm25_vector_name: str
@@ -26,6 +31,7 @@ class IndexingOperations:
     collection_name: str
     cache: RedisCache
     parent_store: ParentChunkStore
+    ingestion_health_check: IngestionHealthCheck
 
     if TYPE_CHECKING:
 
@@ -52,11 +58,15 @@ class IndexingOperations:
             raise ValueError("Document has no extracted text")
 
         structured_document = self.chunker.chunk_document(document)
+        health_check = getattr(self, "ingestion_health_check", IngestionHealthCheck())
+        report = health_check.validate(document, structured_document)
         document.document_title = structured_document.title
         document.parent_chunk_ids = [
             parent.parent_id for parent in structured_document.parent_chunks
         ]
         document.embedding_model = self.embedding_model
+        document.ingestion_report = report.to_dict()
+        document.quality_warning = self._summarize_ingestion_report(report)
 
         parent_records = [
             {
@@ -113,10 +123,7 @@ class IndexingOperations:
         self.delete_document_chunks(document.document_id)
         if points:
             try:
-                self.client.upsert(
-                    collection_name=self.collection_name,
-                    points=points,
-                )
+                self._upsert_points_in_batches(points)
                 self.parent_store.put_many(parent_records)
             except Exception:
                 logger.exception(
@@ -137,6 +144,79 @@ class IndexingOperations:
             },
         )
         return chunk_ids
+
+    def _upsert_points_in_batches(self, points: list[PointStruct]) -> None:
+        """Send point upserts in payload-sized batches to stay below Qdrant limits."""
+        batches = self._split_upsert_batches(points)
+        if len(batches) > 1:
+            logger.info(
+                "Uploading indexed chunks in multiple Qdrant batches",
+                extra={"batch_count": len(batches), "point_count": len(points)},
+            )
+        for batch_index, batch in enumerate(batches, start=1):
+            logger.debug(
+                "Upserting Qdrant batch",
+                extra={
+                    "batch_index": batch_index,
+                    "batch_count": len(batches),
+                    "points_in_batch": len(batch),
+                },
+            )
+            self.client.upsert(
+                collection_name=self.collection_name,
+                points=batch,
+            )
+
+    def _split_upsert_batches(self, points: list[PointStruct]) -> list[list[PointStruct]]:
+        """Partition points into request-sized batches based on JSON payload size."""
+        if not points:
+            return []
+
+        max_bytes = getattr(self, "MAX_UPSERT_PAYLOAD_BYTES", self.MAX_UPSERT_PAYLOAD_BYTES)
+        limit = max(int(max_bytes) - self._UPSERT_BATCH_OVERHEAD_BYTES, 1)
+        batches: list[list[PointStruct]] = []
+        current_batch: list[PointStruct] = []
+        current_size = 0
+
+        for point in points:
+            point_size = self._estimate_point_payload_bytes(point)
+            if point_size > limit:
+                raise ValueError(
+                    "A single indexed chunk is too large for Qdrant upsert payload limits. "
+                    f"Estimated point size={point_size} bytes, limit={limit} bytes."
+                )
+
+            if current_batch and (current_size + point_size) > limit:
+                batches.append(current_batch)
+                current_batch = []
+                current_size = 0
+
+            current_batch.append(point)
+            current_size += point_size
+
+        if current_batch:
+            batches.append(current_batch)
+        return batches
+
+    def _estimate_point_payload_bytes(self, point: PointStruct) -> int:
+        """Estimate the serialized JSON size of one upsert point."""
+        serialized = point.model_dump(mode="json", exclude_none=True)
+        return len(json.dumps(serialized, ensure_ascii=False, separators=(",", ":")).encode())
+
+    def _summarize_ingestion_report(self, report: Any) -> str | None:
+        """Collapse ingestion issues into a short human-readable warning."""
+        issues = list(getattr(report, "issues", []) or [])
+        unrecognized = list(getattr(report, "unrecognized_headings", []) or [])
+        if not issues and not unrecognized:
+            return None
+
+        parts = [f"{issue.code}: {issue.message}" for issue in issues[:3]]
+        if unrecognized:
+            parts.append(
+                "UNRECOGNIZED_HEADINGS: "
+                + ", ".join(unrecognized[:3])
+            )
+        return " | ".join(parts)
 
     def delete_document_chunks(self, document_id: str) -> None:
         """Delete all chunks for a specific document."""

@@ -149,6 +149,7 @@ class RagasEvaluator:
         self._llm: Any = None
         self._embeddings: Any = None
         self._retriever: Any = None
+        self._retrieval_node: Any = None
         self._response_service: Any = None
 
     # -- public entry point --------------------------------------------------
@@ -187,26 +188,24 @@ class RagasEvaluator:
 
         for sample in samples:
             try:
-                # 1. Retrieve
-                chunks = await self._retriever.search_similar(
-                    query=sample.user_input,
-                    top_k=self.config.k_eval,
-                )
-                sample.retrieved_contexts = [
-                    chunk.get("text", "") or chunk.get("child_text", "") for chunk in chunks
-                ]
-
-                # 2. Generate response
                 from langchain_core.messages import HumanMessage
 
                 from src.utils.state import AgentState
 
                 state = AgentState(
                     messages=[HumanMessage(content=sample.user_input)],
-                    retrieved_chunks=chunks,
+                    requires_retrieval=True,
                     retrieval_query=sample.user_input,
                     current_intent="query_document",
                 )
+                retrieval_updates = await self._retrieval_node.run(state)
+                state = state.model_copy(update=retrieval_updates)
+                sample.retrieved_contexts = [
+                    chunk.get("text", "") or chunk.get("child_text", "")
+                    for chunk in state.retrieved_chunks
+                ]
+
+                # 2. Generate response
                 result = self._response_service.generate(state)
                 sample.response = result.get("draft_response", "")
 
@@ -221,8 +220,10 @@ class RagasEvaluator:
         """Lazily initialise retriever and response service."""
         if self._retriever is None:
             from src.utils.vector_store import VectorStoreTools
+            from src.utils.nodes.retrieval import RetrievalNode
 
             self._retriever = VectorStoreTools()
+            self._retrieval_node = RetrievalNode(retriever=self._retriever)
         if self._response_service is None:
             from src.services.response_generation import ResponseGenerationService
 

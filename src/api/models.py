@@ -76,6 +76,10 @@ class DocumentIngestionResponse(BaseModel):
         default_factory=list,
         description="Non-fatal OCR warnings",
     )
+    quality_warning: str | None = Field(
+        default=None,
+        description="Ingestion quality warning if chunk coverage looked suspicious",
+    )
     error: str | None = Field(default=None, description="Processing error, if any")
 
 
