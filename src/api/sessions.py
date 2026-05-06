@@ -7,7 +7,7 @@ from src.services.session_registry import InMemorySessionManager
 session_manager = InMemorySessionManager(agent_factory=StudentRecordsAgent)
 
 
-def get_or_create_agent(session_id: str | None = None) -> tuple[ChatAgent, str]:
+def get_or_create_agent(thread_id: str | None = None) -> tuple[ChatAgent, str]:
     """Get existing agent or create a new one for the session."""
-    agent, active_session_id = session_manager.get_or_create(session_id)
-    return agent, active_session_id
+    agent, active_thread_id = session_manager.get_or_create(thread_id)
+    return agent, active_thread_id

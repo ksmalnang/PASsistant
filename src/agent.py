@@ -23,11 +23,12 @@ from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any, Optional
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
 from src.config import configure_logging, get_settings
 from src.graphs.workflow import compile_app
+from src.services.contracts import AgentStreamUpdate
 from src.utils.nodes import DocumentProcessingNode
 from src.utils.state import AgentState
 
@@ -93,6 +94,11 @@ class StudentRecordsAgent:
 
         logger.info("Agent initialized with session: %s", self.session_id)
 
+    @property
+    def thread_id(self) -> str:
+        """Public thread identifier alias for the existing session id."""
+        return self.session_id
+
     async def chat(
         self,
         message: str,
@@ -149,7 +155,7 @@ class StudentRecordsAgent:
         self,
         message: str,
         files: Optional[list[tuple[str, bytes]]] = None,
-    ) -> AsyncIterator[Any]:
+    ) -> AsyncIterator[AgentStreamUpdate]:
         """
         Stream agent responses for real-time updates.
 
@@ -160,17 +166,44 @@ class StudentRecordsAgent:
             files: Optional list of (filename, file_bytes) tuples
 
         Yields:
-            Dict with state updates at each step
+            Structured status and final-state updates
         """
         state = self._build_initial_state(message, files)
         config = self._build_run_config()
+        state_snapshot = state.model_dump()
 
-        async for update in self.app.astream(
-            state.model_dump(),
-            config=config,
-            stream_mode="updates",
-        ):
-            yield update
+        try:
+            async for update in self.app.astream(
+                state.model_dump(),
+                config=config,
+                stream_mode="updates",
+            ):
+                if not isinstance(update, dict):
+                    continue
+
+                for node_name, payload in update.items():
+                    if not isinstance(payload, dict):
+                        continue
+                    self._merge_state_snapshot(state_snapshot, payload)
+                    yield AgentStreamUpdate(
+                        kind="status",
+                        node=node_name,
+                        payload=payload,
+                        state=AgentState(**state_snapshot),
+                    )
+
+            final_state = await self._resolve_stream_final_state(config, state_snapshot)
+            yield AgentStreamUpdate(kind="final", state=final_state)
+        except Exception as exc:
+            logger.error("Agent streaming failed: %s", exc, exc_info=True)
+            self._merge_state_snapshot(
+                state_snapshot,
+                {
+                    "error": str(exc),
+                    "draft_response": f"I encountered an error: {str(exc)}. Please try again.",
+                },
+            )
+            yield AgentStreamUpdate(kind="final", state=AgentState(**state_snapshot))
 
     def _build_initial_state(
         self,
@@ -204,9 +237,43 @@ class StudentRecordsAgent:
             "recursion_limit": 25,
         }
 
+    async def _resolve_stream_final_state(
+        self,
+        config: dict[str, Any],
+        state_snapshot: dict[str, Any],
+    ) -> AgentState:
+        """Resolve the final graph state from the streamed run when possible."""
+        get_state = getattr(self.app, "aget_state", None)
+        if callable(get_state):
+            try:
+                state_obj = await get_state(config)
+                values = getattr(state_obj, "values", None)
+                if isinstance(values, dict):
+                    self._merge_state_snapshot(state_snapshot, values)
+            except Exception:
+                logger.debug("Compiled graph does not expose aget_state() for streamed runs.")
+        return AgentState(**state_snapshot)
+
+    def _merge_state_snapshot(self, snapshot: dict[str, Any], update: dict[str, Any]) -> None:
+        """Merge a partial LangGraph state update into the current snapshot."""
+        for key, value in update.items():
+            if key == "messages" and isinstance(value, list):
+                snapshot.setdefault("messages", [])
+                snapshot["messages"].extend(value)
+                continue
+            if key in {"citations", "retrieved_chunks", "processed_documents", "pending_documents"}:
+                snapshot[key] = list(value) if isinstance(value, list) else value
+                continue
+            snapshot[key] = value
+
     def _extract_response_text(self, final_state: AgentState) -> str:
         """Resolve the assistant response from the final graph state."""
+        if final_state.draft_response:
+            return str(final_state.draft_response)
         if final_state.messages:
+            for message in reversed(final_state.messages):
+                if isinstance(message, AIMessage):
+                    return _message_content_to_text(message.content)
             last_message = final_state.messages[-1]
             return _message_content_to_text(last_message.content)
         return "I processed your request but have no response to provide."

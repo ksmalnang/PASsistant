@@ -14,11 +14,11 @@ class InMemorySessionManager:
         self._agent_factory = agent_factory
         self._sessions: dict[str, ChatAgent] = {}
 
-    def get_or_create(self, session_id: str | None = None) -> tuple[ChatAgent, str]:
+    def get_or_create(self, thread_id: str | None = None) -> tuple[ChatAgent, str]:
         """Return an existing agent or create a new one."""
-        if session_id and session_id in self._sessions:
-            return self._sessions[session_id], session_id
+        if thread_id and thread_id in self._sessions:
+            return self._sessions[thread_id], thread_id
 
-        agent = self._agent_factory(session_id)
+        agent = self._agent_factory(thread_id)
         self._sessions[agent.session_id] = agent
         return agent, agent.session_id
