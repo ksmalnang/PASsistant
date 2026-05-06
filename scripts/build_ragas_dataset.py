@@ -2,8 +2,8 @@
 """Validate and inspect a RAGAS evaluation dataset.
 
 Usage:
-    python scripts/build_ragas_dataset.py --validate tests/fixtures/ragas_eval_dataset.jsonl
-    python scripts/build_ragas_dataset.py --validate tests/fixtures/ragas_eval_dataset.jsonl --stats
+    python scripts/build_ragas_dataset.py --validate tests/fixtures/ragas_dataset.jsonl
+    python scripts/build_ragas_dataset.py --validate tests/fixtures/ragas_dataset.jsonl --stats
 """
 
 from __future__ import annotations
@@ -14,8 +14,8 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-REQUIRED_FIELDS = {"id", "user_input", "reference"}
-OPTIONAL_FIELDS = {"reference_contexts", "metadata"}
+REQUIRED_FIELDS = {"id", "question", "ground_truth"}
+OPTIONAL_FIELDS = {"answer", "contexts", "metadata"}
 
 
 def validate_dataset(path: Path) -> list[dict]:
@@ -49,14 +49,35 @@ def validate_dataset(path: Path) -> list[dict]:
                 )
                 continue
 
-            if not isinstance(row["user_input"], str) or not row["user_input"].strip():
-                errors.append(f"  Line {line_no}: user_input is empty")
-            if not isinstance(row["reference"], str) or not row["reference"].strip():
-                errors.append(f"  Line {line_no}: reference is empty")
+            if not isinstance(row["question"], str) or not row["question"].strip():
+                errors.append(f"  Line {line_no}: question is empty")
+            if not isinstance(row["ground_truth"], str) or not row["ground_truth"].strip():
+                errors.append(f"  Line {line_no}: ground_truth is empty")
 
-            ref_ctx = row.get("reference_contexts")
-            if ref_ctx is not None and not isinstance(ref_ctx, list):
-                errors.append(f"  Line {line_no}: reference_contexts must be a list")
+            answer = row.get("answer")
+            if answer is not None and not isinstance(answer, str):
+                errors.append(f"  Line {line_no}: answer must be a string")
+
+            contexts = row.get("contexts")
+            if contexts is not None:
+                if not isinstance(contexts, list):
+                    errors.append(f"  Line {line_no}: contexts must be a list")
+                else:
+                    for idx, context in enumerate(contexts, start=1):
+                        if not isinstance(context, dict):
+                            errors.append(
+                                f"  Line {line_no}: contexts[{idx}] must be an object"
+                            )
+                            continue
+                        if not isinstance(context.get("text"), str) or not context["text"].strip():
+                            errors.append(
+                                f"  Line {line_no}: contexts[{idx}].text must be a non-empty string"
+                            )
+                        is_relevant = context.get("is_relevant")
+                        if is_relevant is not None and not isinstance(is_relevant, bool):
+                            errors.append(
+                                f"  Line {line_no}: contexts[{idx}].is_relevant must be a boolean"
+                            )
 
             rows.append(row)
 
@@ -79,18 +100,24 @@ def print_stats(rows: list[dict]) -> None:
     categories: Counter[str] = Counter()
     difficulties: Counter[str] = Counter()
     languages: Counter[str] = Counter()
-    has_ref_ctx = 0
+    has_contexts = 0
+    relevant_context_total = 0
 
     for row in rows:
         meta = row.get("metadata", {})
         categories[meta.get("category", "uncategorised")] += 1
         difficulties[meta.get("difficulty", "unspecified")] += 1
         languages[meta.get("language", "unknown")] += 1
-        if row.get("reference_contexts"):
-            has_ref_ctx += 1
+        contexts = row.get("contexts") or []
+        if contexts:
+            has_contexts += 1
+            relevant_context_total += sum(
+                1 for context in contexts if isinstance(context, dict) and context.get("is_relevant", True)
+            )
 
     print(f"\n--- Dataset Statistics ({len(rows)} samples) ---")
-    print(f"  Samples with reference_contexts: {has_ref_ctx}/{len(rows)}")
+    print(f"  Samples with contexts: {has_contexts}/{len(rows)}")
+    print(f"  Relevant contexts total: {relevant_context_total}")
 
     print("\n  Categories:")
     for cat, count in categories.most_common():

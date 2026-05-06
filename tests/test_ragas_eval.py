@@ -54,21 +54,33 @@ class TestLoadDataset:
         ds = tmp_path / "valid.jsonl"
         ds.write_text(
             textwrap.dedent("""\
-            {"id": "q1", "user_input": "Hello?", "reference": "Hi!"}
-            {"id": "q2", "user_input": "What?", "reference": "That.", "reference_contexts": ["ctx"]}
+            {"id": "q1", "question": "Hello?", "ground_truth": "Hi!", "answer": "Hi there", "contexts": [{"text": "ctx1", "is_relevant": true}]}
+            {"id": "q2", "question": "What?", "ground_truth": "That.", "contexts": [{"text": "ctxA", "is_relevant": false}, {"text": "ctxB", "is_relevant": true}]}
             """),
             encoding="utf-8",
         )
         samples = load_dataset(ds)
         assert len(samples) == 2
         assert samples[0].id == "q1"
-        assert samples[1].reference_contexts == ["ctx"]
+        assert samples[0].response == "Hi there"
+        assert samples[1].reference_contexts == ["ctxB"]
+        assert samples[1].provided_contexts == ["ctxA", "ctxB"]
 
     def test_missing_required_field(self, tmp_path: Path) -> None:
         """Missing required field raises ValueError."""
         ds = tmp_path / "bad.jsonl"
-        ds.write_text('{"id": "q1", "user_input": "Hello?"}\n', encoding="utf-8")
+        ds.write_text('{"id": "q1", "question": "Hello?"}\n', encoding="utf-8")
         with pytest.raises(ValueError, match="missing required field"):
+            load_dataset(ds)
+
+    def test_contexts_must_be_objects(self, tmp_path: Path) -> None:
+        """Contexts must use the structured object format."""
+        ds = tmp_path / "bad_contexts.jsonl"
+        ds.write_text(
+            '{"id": "q1", "question": "Hello?", "ground_truth": "Hi!", "contexts": ["ctx"]}\n',
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="contexts\\[1\\] must be an object"):
             load_dataset(ds)
 
     def test_empty_dataset(self, tmp_path: Path) -> None:
@@ -94,7 +106,7 @@ class TestLoadDataset:
         """Blank lines in JSONL should be silently skipped."""
         ds = tmp_path / "blanks.jsonl"
         ds.write_text(
-            '\n{"id": "q1", "user_input": "Hey", "reference": "Hi"}\n\n',
+            '\n{"id": "q1", "question": "Hey", "ground_truth": "Hi"}\n\n',
             encoding="utf-8",
         )
         samples = load_dataset(ds)
@@ -104,7 +116,7 @@ class TestLoadDataset:
         """Metadata dict should be preserved on the sample."""
         ds = tmp_path / "meta.jsonl"
         ds.write_text(
-            '{"id": "q1", "user_input": "Q", "reference": "A", "metadata": {"cat": "test"}}\n',
+            '{"id": "q1", "question": "Q", "ground_truth": "A", "metadata": {"cat": "test"}}\n',
             encoding="utf-8",
         )
         samples = load_dataset(ds)
@@ -112,12 +124,11 @@ class TestLoadDataset:
 
     def test_real_fixture_dataset(self) -> None:
         """The actual evaluation dataset loads without errors."""
-        ds_path = FIXTURES_DIR / "ragas_eval_dataset.jsonl"
+        ds_path = FIXTURES_DIR / "ragas_dataset.jsonl"
         if not ds_path.exists():
             pytest.skip("Evaluation dataset not present")
         samples = load_dataset(ds_path)
         assert len(samples) >= 1
-
 
 # ===========================================================================
 # Phase 5.2 — Metric selection tests
@@ -186,16 +197,16 @@ class TestReportBuilder:
             samples = [
                 RagasEvalSample(
                     id="q1",
-                    user_input="Hello?",
-                    reference="Hi!",
+                    question="Hello?",
+                    ground_truth="Hi!",
                     response="Hi there!",
                     retrieved_contexts=["ctx1"],
                     metadata={"category": "test"},
                 ),
                 RagasEvalSample(
                     id="q2",
-                    user_input="What?",
-                    reference="That.",
+                    question="What?",
+                    ground_truth="That.",
                     response="This.",
                     retrieved_contexts=["ctx2"],
                 ),
@@ -321,20 +332,30 @@ class TestFixtureMode:
         evaluator = RagasEvaluator(config)
 
         samples = [
-            RagasEvalSample(id="q1", user_input="Q1?", reference="R1"),
-            RagasEvalSample(id="q2", user_input="Q2?", reference="R2"),
+            RagasEvalSample(id="q1", question="Q1?", ground_truth="R1"),
+            RagasEvalSample(id="q2", question="Q2?", ground_truth="R2"),
         ]
 
         updated = evaluator._apply_fixtures(samples)
         assert updated[0].response == "Answer A"
         assert updated[1].retrieved_contexts == ["ctx B1", "ctx B2"]
 
-    def test_fixture_mode_missing_path_raises(self) -> None:
+    def test_fixture_mode_uses_dataset_answers_without_fixture_file(self) -> None:
         config = RagasEvalConfig(
             dataset_path=Path("dummy.jsonl"),
             mode="fixture",
             fixture_path=None,
         )
         evaluator = RagasEvaluator(config)
-        with pytest.raises(ValueError, match="--fixture path is required"):
-            evaluator._apply_fixtures([])
+        samples = [
+            RagasEvalSample(
+                id="q1",
+                question="Q1?",
+                ground_truth="R1",
+                provided_contexts=["ctx A", "ctx B"],
+                response="Answer A",
+            )
+        ]
+        updated = evaluator._apply_fixtures(samples)
+        assert updated[0].response == "Answer A"
+        assert updated[0].retrieved_contexts == ["ctx A", "ctx B"]
