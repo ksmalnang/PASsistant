@@ -7,6 +7,7 @@ from qdrant_client.http.models import SparseVector
 
 from src.services.ingestion_health import IngestionHealthCheck
 from src.services.response_generation import CitationBuilder, ResponseContextBuilder
+from src.utils.nodes.retrieval import RetrievalNode
 from src.utils.state import DocumentType, DocumentUpload
 from src.utils.tools.hierarchical_chunking import HierarchicalChunker
 from src.utils.tools.parent_store import ParentChunkStore
@@ -344,9 +345,10 @@ def test_response_context_renders_child_evidence_before_heading_only_parent():
         ]
     )
 
-    assert "Matched child evidence" in context_lines[0]
-    assert "CPL01" in context_lines[0].split("Matched child evidence", 1)[1]
-    assert "Parent section context" not in context_lines[0]
+    context = "\n".join(context_lines)
+    assert "Matched child evidence" in context
+    assert "CPL01" in context.split("Matched child evidence", 1)[1]
+    assert "Parent section context" not in context
 
 
 def test_response_context_omits_broad_parent_when_precise_child_table_exists():
@@ -377,8 +379,9 @@ def test_response_context_omits_broad_parent_when_precise_child_table_exists():
         ]
     )
 
-    assert "PL1" in context_lines[0]
-    assert "PL4" not in context_lines[0]
+    context = "\n".join(context_lines)
+    assert "PL1" in context
+    assert "PL4" not in context
 
 
 def test_response_context_prefers_real_table_rows_over_caption_and_intro():
@@ -419,7 +422,7 @@ def test_response_context_prefers_real_table_rows_over_caption_and_intro():
         ]
     )
 
-    matched_section = context_lines[0].split("Matched child evidence:\n", 1)[1]
+    matched_section = "\n".join(context_lines).split("Matched child evidence:\n", 1)[1]
     assert "PL1" in matched_section
     assert "PL2" in matched_section
     assert matched_section.index("PL1") < matched_section.index("Tabel 1. Profil Lulusan")
@@ -454,7 +457,7 @@ def test_response_context_prefers_earlier_table_parts_over_later_ones():
         ]
     )
 
-    matched_section = context_lines[0].split("Matched child evidence:\n", 1)[1]
+    matched_section = "\n".join(context_lines).split("Matched child evidence:\n", 1)[1]
     assert matched_section.index("PL1") < matched_section.index("PL3")
 
 
@@ -493,7 +496,7 @@ def test_response_context_prefers_distinct_table_groups_over_second_part_of_same
         ]
     )
 
-    matched_section = context_lines[0].split("Matched child evidence:\n", 1)[1]
+    matched_section = "\n".join(context_lines).split("Matched child evidence:\n", 1)[1]
     assert "PL2" in matched_section
     assert "lanjutan" not in matched_section
 
@@ -1116,6 +1119,7 @@ async def test_search_similar_supports_reranker_strategy(tmp_path, monkeypatch):
     monkeypatch.setattr(vector_tools, "ensure_collection", lambda: None)
     monkeypatch.setattr(vector_tools, "_get_embeddings", lambda: FakeEmbeddings())
     monkeypatch.setattr(vector_tools, "_get_reranker", lambda: fake_reranker)
+    monkeypatch.setattr(vector_tools, "_supports_bm25_vectors", lambda: False)
     vector_tools.client = FakeClient()
     vector_tools.retrieval_strategy = "reranker"
     vector_tools.reranker_model = "jinaai/jina-reranker-v2-base-multilingual"
@@ -1142,6 +1146,139 @@ async def test_search_similar_supports_reranker_strategy(tmp_path, monkeypatch):
     assert cached_results == results
     assert vector_tools.client.query_calls == 1
     assert fake_reranker.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_reranker_uses_rrf_candidates_when_bm25_is_available(tmp_path, monkeypatch):
+    """Reranker mode should rerank hybrid RRF candidates, not dense-only candidates."""
+    vector_tools = VectorStoreTools()
+    vector_tools.cache = FakeCache()
+    vector_tools.parent_store = ParentChunkStore(
+        store_path=tmp_path / "parents.json",
+        cache=vector_tools.cache,
+    )
+    vector_tools.parent_store.put_many(
+        [
+            {
+                "parent_id": "doc-001:general",
+                "document_id": "doc-001",
+                "filename": "akademik.pdf",
+                "section_id": "general",
+                "text": "Pembayaran umum mahasiswa.",
+                "metadata": {
+                    "breadcrumb": "IV.1 Pembayaran Umum",
+                    "section_id": "general",
+                    "chunk_type": "section",
+                },
+            },
+            {
+                "parent_id": "doc-001:cuti",
+                "document_id": "doc-001",
+                "filename": "akademik.pdf",
+                "section_id": "cuti",
+                "text": "IV.9.1 Cuti Akademik\n\nBiaya administrasi cuti sebesar 5% dari DPP.",
+                "metadata": {
+                    "breadcrumb": "IV.9.1 Cuti Akademik",
+                    "section_id": "cuti",
+                    "chunk_type": "section",
+                },
+            },
+        ]
+    )
+
+    class FakeEmbeddings:
+        async def aembed_query(self, query: str) -> list[float]:
+            assert query == "cuti akademik biaya DPP"
+            return [0.1, 0.2]
+
+    class FakeClient:
+        def __init__(self):
+            self.dense_calls = 0
+            self.bm25_calls = 0
+
+        def collection_exists(self, _name: str) -> bool:
+            return True
+
+        def get_collection(self, _name: str) -> SimpleNamespace:
+            return SimpleNamespace(
+                points_count=0,
+                config=SimpleNamespace(
+                    params=SimpleNamespace(
+                        vectors=SimpleNamespace(size=2),
+                        sparse_vectors={"bm25": object()},
+                    )
+                ),
+            )
+
+        def query_points(self, **kwargs: object) -> SimpleNamespace:
+            if kwargs.get("using") == "bm25":
+                self.bm25_calls += 1
+                return SimpleNamespace(points=[
+                    SimpleNamespace(
+                        id="child-cuti",
+                        score=12.0,
+                        payload={
+                            "text": "Biaya administrasi cuti sebesar 5% dari DPP.",
+                            "parent_id": "doc-001:cuti",
+                            "document_id": "doc-001",
+                            "filename": "akademik.pdf",
+                            "document_type": "policy",
+                            "section_id": "cuti.p1",
+                            "breadcrumb": "IV.9.1 Cuti Akademik",
+                            "chunk_type": "paragraph",
+                        },
+                    )
+                ])
+
+            self.dense_calls += 1
+            return SimpleNamespace(points=[
+                SimpleNamespace(
+                    id="child-general",
+                    score=0.92,
+                    payload={
+                        "text": "Pembayaran umum mahasiswa.",
+                        "parent_id": "doc-001:general",
+                        "document_id": "doc-001",
+                        "filename": "akademik.pdf",
+                        "document_type": "policy",
+                        "section_id": "general.p1",
+                        "breadcrumb": "IV.1 Pembayaran Umum",
+                        "chunk_type": "paragraph",
+                    },
+                )
+            ])
+
+    class FakeReranker:
+        def rerank(self, *, query: str, documents: list[str]) -> list[float]:
+            assert query == "cuti akademik biaya DPP"
+            assert len(documents) == 2
+            assert any("Cuti Akademik" in document for document in documents)
+            return [0.91 if "Cuti Akademik" in document else 0.12 for document in documents]
+
+    monkeypatch.setattr(vector_tools, "ensure_collection", lambda: None)
+    monkeypatch.setattr(vector_tools, "_get_embeddings", lambda: FakeEmbeddings())
+    monkeypatch.setattr(vector_tools, "_get_reranker", lambda: FakeReranker())
+    monkeypatch.setattr(
+        vector_tools,
+        "_build_bm25_vector",
+        lambda _query, *, is_query: SparseVector(indices=[1], values=[1.0]),
+    )
+    vector_tools.client = FakeClient()
+    vector_tools.retrieval_strategy = "reranker"
+    vector_tools.reranker_model = "fake-reranker"
+    vector_tools.bm25_vectors_enabled = True
+
+    results = await vector_tools.search_similar(
+        query="cuti akademik biaya DPP",
+        top_k=2,
+        score_threshold=0.4,
+    )
+
+    assert [result["section_id"] for result in results] == ["cuti", "general"]
+    assert results[0]["reranker_score"] == pytest.approx(0.91)
+    assert results[0]["bm25_score"] == pytest.approx(12.0)
+    assert vector_tools.client.dense_calls == 1
+    assert vector_tools.client.bm25_calls == 1
 
 
 def test_score_reranker_documents_calls_model_with_keywords():
@@ -1544,6 +1681,7 @@ async def test_search_similar_filters_negative_reranker_results(tmp_path, monkey
     monkeypatch.setattr(vector_tools, "ensure_collection", lambda: None)
     monkeypatch.setattr(vector_tools, "_get_embeddings", lambda: FakeEmbeddings())
     monkeypatch.setattr(vector_tools, "_get_reranker", lambda: FakeReranker())
+    monkeypatch.setattr(vector_tools, "_supports_bm25_vectors", lambda: False)
     vector_tools.client = FakeClient()
     vector_tools.retrieval_strategy = "reranker"
     vector_tools.reranker_model = "fake-reranker"
@@ -1573,3 +1711,57 @@ def test_rrf_final_filter_uses_relative_scores():
     )
 
     assert [result["section_id"] for result in filtered] == ["best", "close"]
+
+
+def test_retrieval_confidence_keeps_clear_topical_match_without_warning():
+    """A near-threshold score should not trigger fallback when the top hit is clearly topical."""
+    node = RetrievalNode(retriever=SimpleNamespace())
+    results = [
+        {
+            "score": 0.399,
+            "breadcrumb": "IV.3. Penilaian > IV.3.3. Ujian Susulan",
+            "text": "Ujian Susulan diberikan izin oleh Wakil Dekan I.",
+            "matched_children": [
+                {
+                    "text": (
+                        "Mahasiswa pada jadwal ujian sedang dirawat inap di rumah sakit "
+                        "dapat mengikuti ujian susulan."
+                    )
+                }
+            ],
+        },
+        {
+            "score": 0.02,
+            "breadcrumb": "IV.3.1. Ujian Tengah Semester",
+            "text": "Ujian Tengah Semester.",
+            "matched_children": [],
+        },
+    ]
+
+    confidence, warning = node._score_retrieval_confidence(
+        query="jadwal ujian UTS masuk rumah sakit bisa nyusul ujian batas lapor",
+        results=results,
+    )
+
+    assert confidence < 0.45
+    assert warning is None
+
+
+def test_retrieval_confidence_warns_for_weak_off_topic_match():
+    """Low-scoring context without enough topical overlap should still warn."""
+    node = RetrievalNode(retriever=SimpleNamespace())
+    results = [
+        {
+            "score": 0.399,
+            "breadcrumb": "VIII.3. Prosedur Pengeluaran Dana",
+            "text": "Dana kemahasiswaan digunakan untuk membiayai kegiatan.",
+            "matched_children": [{"text": "Susunan pengurus lembaga kemahasiswaan."}],
+        }
+    ]
+
+    _confidence, warning = node._score_retrieval_confidence(
+        query="jadwal ujian UTS masuk rumah sakit bisa nyusul ujian batas lapor",
+        results=results,
+    )
+
+    assert warning is not None

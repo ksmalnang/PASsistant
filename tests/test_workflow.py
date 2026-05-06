@@ -11,8 +11,8 @@ from langchain_core.messages import HumanMessage
 from src.graphs.workflow import check_student_resolution
 from src.services.document_processing import DocumentProcessingService
 from src.services.response_generation import CitationBuilder, ResponseContextBuilder
-from src.utils.nodes import ResponseNode, RouterNode
-from src.utils.state import AgentState, DocumentUpload, OCRResult, ProcessingStatus
+from src.utils.nodes import ResponseNode, RetrievalNode, RouterNode
+from src.utils.state import AgentState, DocumentType, DocumentUpload, OCRResult, ProcessingStatus
 
 
 class TestRouterNode:
@@ -41,6 +41,25 @@ class TestRouterNode:
 
         assert result["current_intent"] == "query_student"
         assert result["requires_retrieval"] is True
+
+    def test_query_student_record_lookup_uses_transcript_scope(self):
+        """Pure record lookups should stay scoped to transcript documents."""
+        retrieval = RetrievalNode()
+
+        assert (
+            retrieval._resolve_document_type("query_student", "What is my GPA?")
+            == DocumentType.TRANSCRIPT
+        )
+
+    def test_query_student_policy_question_uses_all_documents(self):
+        """Student wording about SKS/DPP rules should search policy docs too."""
+        retrieval = RetrievalNode()
+        query = (
+            "Kak, IPS ku kemaren dapet 3.12, brarti bisa ambil brp sks nih? "
+            "trus tagihan cicilan 1 DPP tuh bulan apa ya bayarnya?"
+        )
+
+        assert retrieval._resolve_document_type("query_student", query) is None
 
     def test_router_detects_academic_service_query(self):
         """Router should classify academic service questions for retrieval."""
