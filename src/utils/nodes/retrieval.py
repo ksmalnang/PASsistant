@@ -57,6 +57,32 @@ class RetrievalNode:
         "a",
         "an",
     }
+    _POLICY_SCOPE_TERMS = (
+        "ambil sks",
+        "maksimal sks",
+        "batas sks",
+        "beban sks",
+        "berapa sks",
+        "dpp",
+        "spp",
+        "cicilan",
+        "tagihan",
+        "bayar",
+        "pembayaran",
+        "lunas",
+        "perwalian",
+        "krs",
+        "syarat",
+        "boleh",
+        "bisa",
+        "kapan",
+        "bulan",
+        "jadwal",
+        "deadline",
+        "batas",
+        "ketentuan",
+        "aturan",
+    )
 
     def __init__(
         self,
@@ -81,7 +107,10 @@ class RetrievalNode:
             return {}
 
         try:
-            doc_type = self._resolve_document_type(state.current_intent)
+            doc_type = self._resolve_document_type(
+                state.current_intent,
+                state.retrieval_query,
+            )
             queries = self._build_queries(state)
             if not queries:
                 return {
@@ -126,11 +155,22 @@ class RetrievalNode:
             logger.error("Retrieval failed: %s", exc)
             return {"error": f"Document retrieval failed: {exc}"}
 
-    def _resolve_document_type(self, intent: str | None) -> DocumentType | None:
+    def _resolve_document_type(
+        self,
+        intent: str | None,
+        query: str | None = None,
+    ) -> DocumentType | None:
         """Resolve an optional document type filter from the current intent."""
         if intent == "query_student":
+            if self._looks_like_policy_scope(query or ""):
+                return None
             return DocumentType.TRANSCRIPT
         return None
+
+    def _looks_like_policy_scope(self, query: str) -> bool:
+        """Detect mixed student-record wording that asks for policy/rule context."""
+        lowered = query.lower()
+        return any(term in lowered for term in self._POLICY_SCOPE_TERMS)
 
     def _build_queries(self, state: AgentState) -> list[str]:
         """Build original, rewritten, and synonym-expanded retrieval queries."""
@@ -297,7 +337,10 @@ class RetrievalNode:
             + (0.15 * hit_component),
             3,
         )
-        if confidence >= 0.45:
+        top_overlap_ratio = float(scored_results[0].get("query_overlap_ratio") or 0.0)
+        if confidence >= 0.45 or (
+            confidence >= 0.25 and top_score >= 0.35 and top_overlap_ratio >= 0.40
+        ):
             return confidence, None
         return confidence, (
             "The retrieved excerpts may not directly answer the question. "

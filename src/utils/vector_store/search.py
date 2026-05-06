@@ -456,7 +456,7 @@ class SearchOperations:
         fused score. Reranker mode also skips first-stage score filtering so the
         second-stage cross-encoder can decide the final ranking.
         """
-        if self.retrieval_strategy == "rrf" and self._supports_bm25_vectors():
+        if self.retrieval_strategy in {"rrf", "reranker"} and self._supports_bm25_vectors():
             bm25_query = self._build_bm25_vector(query, is_query=True)
             if bm25_query is not None:
                 return self._rrf_search(
