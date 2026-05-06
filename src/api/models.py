@@ -35,17 +35,20 @@ class ChatResponse(BaseModel):
     )
 
 
+ChatStreamEventType = Literal[
+    "run.started",
+    "run.status",
+    "message.delta",
+    "run.completed",
+    "run.failed",
+]
+
+
 class ChatStreamEvent(BaseModel):
     """Transport-neutral chat streaming event."""
 
     event_id: str = Field(description="Opaque event identifier")
-    event_type: Literal[
-        "run.started",
-        "run.status",
-        "message.delta",
-        "run.completed",
-        "run.failed",
-    ] = Field(description="Event type")
+    event_type: ChatStreamEventType = Field(description="Event type")
     thread_id: str = Field(description="Thread identifier")
     run_id: str = Field(description="Run identifier for this chat turn")
     timestamp: datetime = Field(description="Event creation timestamp")

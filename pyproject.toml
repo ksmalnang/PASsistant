@@ -85,6 +85,6 @@ pythonpath = ["."]
 [tool.basedpyright]
 pythonVersion = "3.11"
 include = ["src"]
-exclude = ["tests", ".venv", ".agent"]
+exclude = ["tests", ".venv", ".agent", "src/eval"]
 reportUnusedImport = true
 typeCheckingMode = "basic"

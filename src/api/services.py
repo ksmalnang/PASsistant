@@ -16,7 +16,12 @@ from fastapi import UploadFile
 from langchain_core.messages import AIMessage
 
 from src.api.helpers import create_document_processor, read_upload_files
-from src.api.models import ChatResponse, ChatStreamEvent, DocumentIngestionResponse
+from src.api.models import (
+    ChatResponse,
+    ChatStreamEvent,
+    ChatStreamEventType,
+    DocumentIngestionResponse,
+)
 from src.api.sessions import get_or_create_agent
 from src.services.contracts import ChatAgent, DocumentProcessor, SessionManager
 
@@ -334,7 +339,7 @@ class ChatRouteService:
     async def _append_event(
         self,
         run_state: _RunStreamState,
-        event_type: str,
+        event_type: ChatStreamEventType,
         data: dict[str, Any],
     ) -> ChatStreamEvent:
         """Append an event to replay storage and publish it to subscribers."""

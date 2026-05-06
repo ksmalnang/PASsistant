@@ -243,10 +243,10 @@ class StudentRecordsAgent:
         state_snapshot: dict[str, Any],
     ) -> AgentState:
         """Resolve the final graph state from the streamed run when possible."""
-        get_state = getattr(self.app, "aget_state", None)
+        get_state: object = getattr(self.app, "aget_state", None)
         if callable(get_state):
             try:
-                state_obj = await get_state(config)
+                state_obj = await get_state(config)  # type: ignore[reportGeneralTypeIssues]
                 values = getattr(state_obj, "values", None)
                 if isinstance(values, dict):
                     self._merge_state_snapshot(state_snapshot, values)
