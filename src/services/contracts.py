@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable, Sequence
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, Literal, Protocol, runtime_checkable
 
 from src.utils.state import AgentState, DocumentType, DocumentUpload, OCRResult, StudentRecord
@@ -114,6 +116,17 @@ class DocumentProcessor(Protocol):
         ...
 
 
+@dataclass(slots=True)
+class AgentStreamUpdate:
+    """Structured stream update exposed by chat agents."""
+
+    kind: Literal["status", "final"]
+    state: AgentState | None = None
+    node: str | None = None
+    payload: dict[str, Any] = field(default_factory=dict)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+
 @runtime_checkable
 class ChatAgent(Protocol):
     """Minimal chat agent behavior required by route handlers."""
@@ -121,6 +134,11 @@ class ChatAgent(Protocol):
     @property
     def session_id(self) -> str:
         """Stable session identifier."""
+        ...
+
+    @property
+    def thread_id(self) -> str:
+        """Stable thread identifier exposed to API consumers."""
         ...
 
     @property
@@ -148,8 +166,8 @@ class ChatAgent(Protocol):
         self,
         message: str,
         files: list[tuple[str, bytes]] | None = None,
-    ) -> AsyncIterator[Any]:
-        """Yield streaming chat updates."""
+    ) -> AsyncIterator[AgentStreamUpdate]:
+        """Yield structured streaming chat updates."""
         ...
 
 
@@ -157,7 +175,7 @@ class ChatAgent(Protocol):
 class SessionManager(Protocol):
     """Resolve stateful chat agents for API requests."""
 
-    def get_or_create(self, session_id: str | None = None) -> tuple[ChatAgent, str]:
+    def get_or_create(self, thread_id: str | None = None) -> tuple[ChatAgent, str]:
         """Return an existing agent or create a new one."""
         ...
 

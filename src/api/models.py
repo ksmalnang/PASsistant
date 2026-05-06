@@ -1,6 +1,9 @@
 """Pydantic models for the API layer."""
 
-from pydantic import BaseModel, Field
+from datetime import datetime
+from typing import Any, Literal
+
+from pydantic import AliasChoices, BaseModel, Field
 
 from src.utils.state import Citation
 
@@ -9,9 +12,10 @@ class ChatRequest(BaseModel):
     """Chat request payload."""
 
     message: str = Field(description="User message text", min_length=1, max_length=4000)
-    session_id: str | None = Field(
+    thread_id: str | None = Field(
         default=None,
-        description="Session identifier for continuity",
+        description="Thread identifier for continuity",
+        validation_alias=AliasChoices("thread_id", "session_id"),
     )
 
 
@@ -19,7 +23,7 @@ class ChatResponse(BaseModel):
     """Chat response payload."""
 
     response: str = Field(description="Agent response text")
-    session_id: str = Field(description="Session identifier")
+    thread_id: str = Field(description="Thread identifier")
     intent: str | None = Field(default=None, description="Classified intent")
     documents_processed: int = Field(
         default=0,
@@ -29,6 +33,27 @@ class ChatResponse(BaseModel):
         default_factory=list,
         description="Document sources used for the answer",
     )
+
+
+ChatStreamEventType = Literal[
+    "run.started",
+    "run.status",
+    "message.delta",
+    "run.completed",
+    "run.failed",
+]
+
+
+class ChatStreamEvent(BaseModel):
+    """Transport-neutral chat streaming event."""
+
+    event_id: str = Field(description="Opaque event identifier")
+    event_type: ChatStreamEventType = Field(description="Event type")
+    thread_id: str = Field(description="Thread identifier")
+    run_id: str = Field(description="Run identifier for this chat turn")
+    timestamp: datetime = Field(description="Event creation timestamp")
+    sequence: int = Field(description="Monotonic event sequence within a run")
+    data: dict[str, Any] = Field(default_factory=dict, description="Event payload")
 
 
 class ErrorResponse(BaseModel):
