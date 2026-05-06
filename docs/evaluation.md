@@ -38,7 +38,7 @@ uv pip install -e ".[eval]"
 
 ```bash
 python -m src.eval.ragas_eval \
-    --dataset tests/fixtures/ragas_eval_dataset.jsonl \
+    --dataset tests/fixtures/ragas_dataset.jsonl \
     --mode live \
     --k-eval 5 \
     --output reports/ragas_eval_report.json
@@ -48,7 +48,7 @@ python -m src.eval.ragas_eval \
 
 ```bash
 python -m src.eval.ragas_eval \
-    --dataset tests/fixtures/ragas_eval_dataset.jsonl \
+    --dataset tests/fixtures/ragas_dataset.jsonl \
     --mode live \
     --metrics-tier extended \
     --output reports/ragas_eval_extended.json
@@ -58,7 +58,7 @@ python -m src.eval.ragas_eval \
 
 ```bash
 python -m src.eval.ragas_eval \
-    --dataset tests/fixtures/ragas_eval_dataset.jsonl \
+    --dataset tests/fixtures/ragas_dataset.jsonl \
     --mode fixture \
     --fixture tests/fixtures/ragas_eval_responses.json \
     --output reports/ragas_eval_fixture.json
@@ -66,7 +66,7 @@ python -m src.eval.ragas_eval \
 
 ## Evaluation Dataset
 
-The dataset is stored in JSONL format at `tests/fixtures/ragas_eval_dataset.jsonl`.
+The dataset is stored in JSONL format at `tests/fixtures/ragas_dataset.jsonl`.
 
 ### Schema
 
@@ -75,36 +75,43 @@ Each line is a JSON object with these fields:
 | Field | Type | Required | Purpose |
 |-------|------|----------|---------|
 | `id` | `str` | ✅ | Unique sample identifier |
-| `user_input` | `str` | ✅ | The user question |
-| `reference` | `str` | ✅ | Ground truth answer |
-| `reference_contexts` | `list[str]` | ❌ | Ideal context passages |
+| `question` | `str` | ✅ | The user question |
+| `ground_truth` | `str` | ✅ | Ground truth answer |
+| `answer` | `str` | ❌ | Candidate answer for fixture-style evaluation |
+| `contexts` | `list[object]` | ❌ | Retrieved/reference passages with relevance flags |
 | `metadata` | `dict` | ❌ | Category, difficulty, language |
 
 ### Example
 
 ```json
 {
-  "id": "ragas_q01",
-  "user_input": "Apa syarat mengikuti ujian sidang skripsi?",
-  "reference": "Mahasiswa harus telah menyelesaikan minimal 144 SKS...",
-  "reference_contexts": ["Persyaratan sidang skripsi meliputi..."],
+  "id": "ragas_q1",
+  "question": "Kalau saya telat bayar DPP, masih bisa ikut kuliah nggak?",
+  "contexts": [
+    {
+      "text": "Perwalian dapat dilakukan setelah mahasiswa memenuhi persyaratan administrasi pembayaran uang kuliah...",
+      "is_relevant": true
+    }
+  ],
+  "answer": "Kalau telat bayar DPP, perwalian belum bisa dilakukan sampai syarat administrasi pembayaran terpenuhi.",
+  "ground_truth": "Perwalian baru dapat dilakukan setelah persyaratan administrasi pembayaran DPP/SPP terpenuhi.",
   "metadata": {
-    "category": "academic_policy",
     "difficulty": "medium",
-    "language": "id"
+    "reasoning_type": "multi-hop",
+    "noise_level": "low"
   }
 }
 ```
 
 ### Adding New Samples
 
-1. Add a new line to `tests/fixtures/ragas_eval_dataset.jsonl`
+1. Add a new line to `tests/fixtures/ragas_dataset.jsonl`
 2. Ensure all required fields are present
 3. Validate with:
 
 ```bash
 python scripts/build_ragas_dataset.py \
-    --validate tests/fixtures/ragas_eval_dataset.jsonl --stats
+    --validate tests/fixtures/ragas_dataset.jsonl --stats
 ```
 
 ### Dataset Categories
@@ -142,6 +149,8 @@ Fixture file format:
   }
 }
 ```
+
+If the dataset rows already include `answer` and `contexts`, `--mode fixture` can run without `--fixture`. In that case the evaluator uses those row values directly.
 
 ## Configuration
 

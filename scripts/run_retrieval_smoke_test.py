@@ -27,7 +27,7 @@ async def run(dataset_path: Path, top_k: int) -> int:
             AgentState(
                 current_intent="query_document",
                 requires_retrieval=True,
-                retrieval_query=sample.user_input,
+                retrieval_query=sample.question,
             )
         )
         results = list(updates.get("retrieved_chunks", []))[:top_k]
@@ -52,7 +52,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--dataset",
-        default="tests/fixtures/ragas_eval_dataset.jsonl",
+        default="tests/fixtures/ragas_dataset.jsonl",
         help="Path to the evaluation dataset JSONL file.",
     )
     parser.add_argument(
