@@ -1,6 +1,6 @@
 # Evaluation Guide
 
-This document covers the RAGAS-based RAG evaluation system for the PASsistant chatbot.
+This document covers the RAGAS-based RAG evaluation system for the PASsistant chatbot in `src.eval.ragas`.
 
 ## Overview
 
@@ -37,7 +37,7 @@ uv pip install -e ".[eval]"
 ### 2. Run evaluation (live mode)
 
 ```bash
-python -m src.eval.ragas_eval \
+python -m src.eval.ragas \
     --dataset tests/fixtures/ragas_dataset.jsonl \
     --mode live \
     --k-eval 5 \
@@ -47,7 +47,7 @@ python -m src.eval.ragas_eval \
 ### 3. Run with extended metrics
 
 ```bash
-python -m src.eval.ragas_eval \
+python -m src.eval.ragas \
     --dataset tests/fixtures/ragas_dataset.jsonl \
     --mode live \
     --metrics-tier extended \
@@ -57,12 +57,20 @@ python -m src.eval.ragas_eval \
 ### 4. Run from pre-computed fixtures
 
 ```bash
-python -m src.eval.ragas_eval \
+python -m src.eval.ragas \
     --dataset tests/fixtures/ragas_dataset.jsonl \
     --mode fixture \
     --fixture tests/fixtures/ragas_eval_responses.json \
     --output reports/ragas_eval_fixture.json
 ```
+
+The package is organized as:
+
+- `src/eval/ragas/models.py` — config, sample model, progress tracker
+- `src/eval/ragas/data.py` — dataset and fixture loading
+- `src/eval/ragas/evaluator.py` — pipeline execution and RAGAS orchestration
+- `src/eval/ragas/reporting.py` — report building and persistence
+- `src/eval/ragas/cli.py` — CLI argument parsing and entrypoint
 
 ## Evaluation Dataset
 
@@ -77,9 +85,9 @@ Each line is a JSON object with these fields:
 | `id` | `str` | ✅ | Unique sample identifier |
 | `question` | `str` | ✅ | The user question |
 | `ground_truth` | `str` | ✅ | Ground truth answer |
-| `answer` | `str` | ❌ | Candidate answer for fixture-style evaluation |
-| `contexts` | `list[object]` | ❌ | Retrieved/reference passages with relevance flags |
-| `metadata` | `dict` | ❌ | Category, difficulty, language |
+| `answer` | `str` | ✅ | Candidate answer for evaluation |
+| `contexts` | `list[object]` | ✅ | Retrieved/reference passages with relevance flags |
+| `metadata` | `dict` | ✅ | Source and difficulty annotations |
 
 ### Example
 
@@ -96,12 +104,20 @@ Each line is a JSON object with these fields:
   "answer": "Kalau telat bayar DPP, perwalian belum bisa dilakukan sampai syarat administrasi pembayaran terpenuhi.",
   "ground_truth": "Perwalian baru dapat dilakukan setelah persyaratan administrasi pembayaran DPP/SPP terpenuhi.",
   "metadata": {
+    "source_file": "pedoman-akademik.pdf",
     "difficulty": "medium",
     "reasoning_type": "multi-hop",
     "noise_level": "low"
   }
 }
 ```
+
+`metadata` must include:
+
+- `source_file`: non-empty string
+- `difficulty`: `easy` | `medium` | `hard`
+- `reasoning_type`: `single-hop` | `multi-hop` | `comparison` | `inference`
+- `noise_level`: `low` | `medium` | `high`
 
 ### Adding New Samples
 
@@ -171,7 +187,7 @@ The evaluation produces a JSON report with:
 
 ## Relationship to Retrieval Evaluation
 
-The RAGAS evaluation **complements** the existing retrieval-only evaluator (`app/eval/retrieval_eval.py`):
+The RAGAS evaluation **complements** the existing retrieval-only evaluation workflow:
 
 | Aspect | Retrieval Eval | RAGAS Eval |
 |--------|---------------|------------|
