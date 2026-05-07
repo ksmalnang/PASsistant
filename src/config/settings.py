@@ -54,6 +54,24 @@ class Settings(BaseSettings):
         default="",
         description="LLM model for RAGAS evaluator judge (falls back to LLM_MODEL if empty)",
     )
+    RAGAS_LLM_REASONING_ENABLED: Optional[bool] = Field(
+        default=None,
+        description="Override provider reasoning controls for RAGAS evaluator LLM only",
+    )
+    RAGAS_LLM_REASONING_EFFORT: Optional[
+        Literal["xhigh", "high", "medium", "low", "minimal", "none"]
+    ] = Field(
+        default=None,
+        description="Override reasoning effort for RAGAS evaluator LLM only",
+    )
+    RAGAS_LLM_REASONING_MAX_TOKENS: Optional[int] = Field(
+        default=None,
+        description="Override maximum reasoning tokens for RAGAS evaluator LLM only",
+    )
+    RAGAS_LLM_REASONING_EXCLUDE: Optional[bool] = Field(
+        default=None,
+        description="Override reasoning exclusion for RAGAS evaluator LLM only",
+    )
     RAGAS_EMBEDDING_MODEL: str = Field(
         default="",
         description="Embedding model for RAGAS semantic similarity metrics (falls back to EMBEDDING_MODEL if empty)",
