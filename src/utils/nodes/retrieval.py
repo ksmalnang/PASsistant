@@ -31,12 +31,26 @@ class RetrievalNode:
     """
 
     _STOPWORDS = {
+        "aku",
         "apa",
         "yang",
         "akan",
         "jika",
-        "saya",
+        "kalau",
+        "kak",
         "kami",
+        "gue",
+        "gua",
+        "gw",
+        "nih",
+        "dong",
+        "sih",
+        "kok",
+        "loh",
+        "yah",
+        "ya",
+        "deh",
+        "saya",
         "dan",
         "atau",
         "di",
@@ -48,8 +62,16 @@ class RetrievalNode:
         "tanpa",
         "mengajukan",
         "mengikuti",
+        "ikut",
         "bagaimana",
         "adalah",
+        "masih",
+        "bisa",
+        "nggak",
+        "enggak",
+        "ga",
+        "gak",
+        "tdk",
         "the",
         "is",
         "of",
@@ -57,6 +79,16 @@ class RetrievalNode:
         "a",
         "an",
     }
+    _POLICY_RULE_MARKERS = (
+        "dapat dilakukan setelah",
+        "tidak dapat",
+        "belum bisa",
+        "belum dapat",
+        "wajib",
+        "harus",
+        "syarat",
+        "ketentuan",
+    )
     _POLICY_SCOPE_TERMS = (
         "ambil sks",
         "maksimal sks",
@@ -296,6 +328,7 @@ class RetrievalNode:
         scored_results: list[dict[str, Any]] = []
         overlap_hits = 0
         strong_hits = 0
+        strategy = getattr(self.vector_tools, "retrieval_strategy", "similarity")
         for result in results[:5]:
             evidence_text = " ".join(
                 [
@@ -310,13 +343,15 @@ class RetrievalNode:
             ).lower()
             overlap_terms = sorted(term for term in query_terms if term and term in evidence_text)
             overlap_ratio = len(overlap_terms) / max(1, len(query_terms))
+            explicit_policy_support = self._result_has_explicit_policy_rule(result)
             annotated = dict(result)
             annotated["query_overlap_terms"] = overlap_terms
             annotated["query_overlap_ratio"] = overlap_ratio
+            annotated["explicit_policy_support"] = explicit_policy_support
             scored_results.append(annotated)
             if overlap_terms:
                 overlap_hits += 1
-            if float(result.get("score") or 0.0) >= 0.55:
+            if self._is_strategy_strong_hit(result, strategy):
                 strong_hits += 1
 
         results[:] = scored_results
@@ -326,20 +361,36 @@ class RetrievalNode:
             if len(scored_results) > 1
             else max(top_score - 0.05, 0.0)
         )
-        score_component = min(max((top_score - 0.35) / 0.45, 0.0), 1.0)
-        margin_component = min(max((top_score - second_score + 0.05) / 0.25, 0.0), 1.0)
+        score_component = self._score_component(top_score, second_score, strategy)
+        margin_component = self._margin_component(top_score, second_score, strategy)
         overlap_component = overlap_hits / max(1, min(len(scored_results), 3))
         hit_component = min(strong_hits / 2, 1.0)
+        explicit_rule_component = 1.0 if scored_results[0].get("explicit_policy_support") else 0.0
         confidence = round(
-            (0.45 * score_component)
+            (0.20 * score_component)
             + (0.20 * margin_component)
             + (0.20 * overlap_component)
-            + (0.15 * hit_component),
+            + (0.10 * hit_component)
+            + (0.30 * explicit_rule_component),
             3,
         )
         top_overlap_ratio = float(scored_results[0].get("query_overlap_ratio") or 0.0)
-        if confidence >= 0.45 or (
-            confidence >= 0.25 and top_score >= 0.35 and top_overlap_ratio >= 0.40
+        if (
+            confidence >= 0.45
+            or self._has_clear_topical_match(
+                confidence=confidence,
+                top_score=top_score,
+                margin_component=margin_component,
+                top_overlap_ratio=top_overlap_ratio,
+                strategy=strategy,
+            )
+            or self._should_trust_explicit_policy_support(
+                top_result=scored_results[0],
+                top_score=top_score,
+                second_score=second_score,
+                top_overlap_ratio=top_overlap_ratio,
+                strategy=strategy,
+            )
         ):
             return confidence, None
         return confidence, (
@@ -347,6 +398,88 @@ class RetrievalNode:
             "If the context looks off-topic, say so explicitly and suggest uploading the "
             "specific academic policy document or contacting the academic office."
         )
+
+    def _contains_explicit_policy_rule(self, text: str) -> bool:
+        """Detect direct rule/prohibition language in academic-policy evidence."""
+        normalized = " ".join(text.split()).strip().lower()
+        if not normalized:
+            return False
+        return any(marker in normalized for marker in self._POLICY_RULE_MARKERS)
+
+    def _result_has_explicit_policy_rule(self, result: dict[str, Any]) -> bool:
+        """Check whether a retrieved result contains an explicit answer-bearing rule."""
+        texts = [str(result.get("text") or "")]
+        texts.extend(
+            str(child.get("text") or "")
+            for child in result.get("matched_children", [])
+            if isinstance(child, dict)
+        )
+        return any(self._contains_explicit_policy_rule(text) for text in texts)
+
+    def _is_strategy_strong_hit(self, result: dict[str, Any], strategy: str) -> bool:
+        """Count strong hits using thresholds appropriate to the active retrieval strategy."""
+        score = float(result.get("score") or 0.0)
+        if strategy == "rrf":
+            return float(result.get("rrf_score") or score) > 0.0
+        if strategy == "reranker":
+            return float(result.get("reranker_score") or score) >= 0.20
+        return score >= 0.55
+
+    def _score_component(self, top_score: float, second_score: float, strategy: str) -> float:
+        """Normalize score magnitude for different retrieval strategies."""
+        if strategy == "rrf":
+            if top_score <= 0.0:
+                return 0.0
+            return min(max(top_score / max(second_score, 1e-6), 0.0), 2.0) / 2.0
+        if strategy == "reranker":
+            return min(max((top_score - 0.15) / 0.20, 0.0), 1.0)
+        return min(max((top_score - 0.35) / 0.45, 0.0), 1.0)
+
+    def _margin_component(self, top_score: float, second_score: float, strategy: str) -> float:
+        """Normalize separation between the top and runner-up candidates."""
+        if strategy == "rrf":
+            if top_score <= 0.0:
+                return 0.0
+            return min(max((top_score - second_score) / top_score, 0.0), 1.0)
+        if strategy == "reranker":
+            return min(max((top_score - second_score + 0.02) / 0.18, 0.0), 1.0)
+        return min(max((top_score - second_score + 0.05) / 0.25, 0.0), 1.0)
+
+    def _should_trust_explicit_policy_support(
+        self,
+        top_result: dict[str, Any],
+        top_score: float,
+        second_score: float,
+        top_overlap_ratio: float,
+        strategy: str,
+    ) -> bool:
+        """Suppress low-confidence warnings when the top chunk directly states the rule."""
+        if not top_result.get("explicit_policy_support"):
+            return False
+        if top_overlap_ratio < 0.45:
+            return False
+        if strategy == "rrf":
+            return top_score > 0.0 and (top_score - second_score) / max(top_score, 1e-6) >= 0.20
+        if strategy == "reranker":
+            return top_score >= 0.20 and (top_score - second_score) >= 0.05
+        return top_score >= 0.35
+
+    def _has_clear_topical_match(
+        self,
+        confidence: float,
+        top_score: float,
+        margin_component: float,
+        top_overlap_ratio: float,
+        strategy: str,
+    ) -> bool:
+        """Allow near-threshold but clearly topical matches to avoid unnecessary fallback warnings."""
+        if confidence < 0.25 or top_overlap_ratio < 0.40:
+            return False
+        if strategy == "rrf":
+            return top_score > 0.0 and margin_component >= 0.20
+        if strategy == "reranker":
+            return top_score >= 0.20 and margin_component >= 0.30
+        return top_score >= 0.35
 
     def _result_key(self, result: dict[str, Any]) -> str:
         """Build a stable dedupe key for hydrated parent results."""

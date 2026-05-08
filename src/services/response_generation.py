@@ -16,16 +16,121 @@ from src.utils.state import AgentState, Citation
 
 logger = logging.getLogger(__name__)
 
+_TABLE_PART_ID_PATTERN = re.compile(r"\.table_(\d+)\.part_(\d+)$")
+_POLICY_RULE_MARKERS = (
+    "dapat dilakukan setelah",
+    "tidak dapat",
+    "belum bisa",
+    "belum dapat",
+    "wajib",
+    "harus",
+    "syarat",
+    "ketentuan",
+)
+_POLICY_SCOPE_MARKERS = (
+    "dpp",
+    "spp",
+    "perwalian",
+    "krs",
+    "situ 2.0",
+    "cicilan",
+    "tagihan",
+    "pembayaran",
+    "bayar",
+)
+
+
+def _normalized_text(text: str) -> str:
+    return " ".join(text.split()).strip().lower()
+
+
+def _is_table_like_text(text: str) -> bool:
+    lowered = text.lower()
+    return "|" in text or "tabel " in lowered or "<table" in lowered or "<td" in lowered
+
+
+def _contains_explicit_policy_rule(text: str) -> bool:
+    normalized = _normalized_text(text)
+    if not normalized:
+        return False
+    return any(marker in normalized for marker in _POLICY_RULE_MARKERS)
+
+
+def _is_policy_like_text(text: str) -> bool:
+    normalized = _normalized_text(text)
+    if not normalized:
+        return False
+    return any(marker in normalized for marker in _POLICY_SCOPE_MARKERS + _POLICY_RULE_MARKERS)
+
+
+def _is_caption_only_child_text(text: str) -> bool:
+    normalized = _normalized_text(text)
+    if not normalized:
+        return True
+    if _is_table_like_text(normalized):
+        return normalized.count("<tr") <= 0 and normalized.count("|") <= 1
+    return normalized.startswith("tabel ") and len(normalized.split()) <= 12
+
+
+def _matched_child_order(child: dict[str, Any]) -> tuple[int, int]:
+    chunk_id = str(child.get("chunk_id") or "")
+    match = _TABLE_PART_ID_PATTERN.search(chunk_id)
+    if not match:
+        return (10_000, 10_000)
+    return (int(match.group(1)), int(match.group(2)))
+
+
+def _matched_child_group_key(child: dict[str, Any]) -> str:
+    chunk_id = str(child.get("chunk_id") or "")
+    if not chunk_id:
+        return ""
+    return re.sub(r"\.part_\d+$", "", chunk_id)
+
+
+def _child_data_richness(text: str) -> int:
+    normalized = " ".join(text.split())
+    if not normalized:
+        return 0
+    richness = normalized.count("<tr") + normalized.count("|")
+    richness += sum(
+        1
+        for marker in ("PL1", "PL2", "PL3", "PL4", "CPL", "No", "Profesi", "Deskripsi")
+        if marker.lower() in normalized.lower()
+    )
+    richness += min(len(normalized.split()), 200)
+    return richness
+
+
+def _matched_child_rank_key(child: dict[str, Any]) -> tuple[int, int, int, int, int, int, int]:
+    text = str(child.get("text") or "").strip()
+    chunk_type = str(child.get("chunk_type") or "").lower()
+    is_table_like = chunk_type in {"table", "list"} or _is_table_like_text(text)
+    explicit_policy_rule = _contains_explicit_policy_rule(text)
+    policy_like = _is_policy_like_text(text)
+    is_caption_only = _is_caption_only_child_text(text)
+    data_richness = _child_data_richness(text)
+    score = float(child.get("score") or 0.0)
+    text_length = len(text)
+    table_order, part_order = _matched_child_order(child)
+    return (
+        2 if explicit_policy_rule else 1 if policy_like else 0,
+        0 if is_caption_only else 1,
+        1 if is_table_like else 0,
+        -table_order,
+        -part_order,
+        data_richness,
+        int(score * 1_000_000) + min(text_length, 4000),
+    )
+
 
 class ResponseContextBuilder:
     """Build the context block used for answer generation."""
 
-    _TABLE_PART_ID_PATTERN = re.compile(r"\.table_(\d+)\.part_(\d+)$")
     _MATCHED_CHILD_PARAGRAPH_LIMIT = 800
     _MATCHED_CHILD_TABLE_LIMIT = 3200
     _DEFAULT_PARENT_CONTEXT_LIMIT = 1200
     _TABLE_PARENT_CONTEXT_LIMIT = 2600
-    _MAX_MATCHED_CHILDREN = 2
+    _MAX_MATCHED_CHILDREN = 3
 
     def build(self, state: AgentState) -> str:
         """Render current workflow state into an LLM context string."""
@@ -48,8 +153,7 @@ class ResponseContextBuilder:
             last_doc = state.processed_documents[-1]
             title = last_doc.document_title or last_doc.filename
             context_parts.append(
-                f"\nLast processed document: {title} "
-                f"(status: {last_doc.processing_status.value})"
+                f"\nLast processed document: {title} (status: {last_doc.processing_status.value})"
             )
             if last_doc.quality_warning:
                 context_parts.append(
@@ -142,74 +246,29 @@ class ResponseContextBuilder:
         """Prefer content-rich atomic evidence over captions or generic lead-in text."""
         return sorted(
             (child for child in matched_children if isinstance(child, dict)),
-            key=self._matched_child_rank_key,
+            key=_matched_child_rank_key,
             reverse=True,
-        )
-
-    def _matched_child_rank_key(
-        self,
-        child: dict[str, Any],
-    ) -> tuple[int, int, int, int, int, int]:
-        """Rank child evidence by usefulness for answer grounding."""
-        text = str(child.get("text") or "").strip()
-        chunk_type = str(child.get("chunk_type") or "").lower()
-        is_table_like = chunk_type in {"table", "list"} or self._is_table_like_text(text)
-        is_caption_only = self._is_caption_only_child_text(text)
-        data_richness = self._child_data_richness(text)
-        score = float(child.get("score") or 0.0)
-        text_length = len(text)
-        table_order, part_order = self._matched_child_order(child)
-        return (
-            1 if is_table_like else 0,
-            0 if is_caption_only else 1,
-            -table_order,
-            -part_order,
-            data_richness,
-            int(score * 1_000_000) + min(text_length, 4000),
         )
 
     def _matched_child_order(self, child: dict[str, Any]) -> tuple[int, int]:
         """Recover stable table/part ordering from the logical chunk id."""
-        chunk_id = str(child.get("chunk_id") or "")
-        match = self._TABLE_PART_ID_PATTERN.search(chunk_id)
-        if not match:
-            return (10_000, 10_000)
-        return (int(match.group(1)), int(match.group(2)))
+        return _matched_child_order(child)
 
     def _matched_child_group_key(self, child: dict[str, Any]) -> str:
         """Group split table/list parts so one table does not consume every evidence slot."""
-        chunk_id = str(child.get("chunk_id") or "")
-        if not chunk_id:
-            return ""
-        return re.sub(r"\.part_\d+$", "", chunk_id)
+        return _matched_child_group_key(child)
 
     def _child_data_richness(self, text: str) -> int:
         """Estimate how much row-level information a child chunk carries."""
-        normalized = " ".join(text.split())
-        if not normalized:
-            return 0
-        richness = normalized.count("<tr") + normalized.count("|")
-        richness += sum(
-            1
-            for marker in ("PL1", "PL2", "PL3", "PL4", "CPL", "No", "Profesi", "Deskripsi")
-            if marker.lower() in normalized.lower()
-        )
-        richness += min(len(normalized.split()), 200)
-        return richness
+        return _child_data_richness(text)
 
     def _is_caption_only_child_text(self, text: str) -> bool:
         """Detect table/list title fragments that carry little or no row data."""
-        normalized = " ".join(text.split()).strip().lower()
-        if not normalized:
-            return True
-        if self._is_table_like_text(normalized):
-            return normalized.count("<tr") <= 0 and normalized.count("|") <= 1
-        return normalized.startswith("tabel ") and len(normalized.split()) <= 12
+        return _is_caption_only_child_text(text)
 
     def _is_table_like_text(self, text: str) -> bool:
         """Return whether text likely contains table/list rows."""
-        lowered = text.lower()
-        return "|" in text or "tabel " in lowered or "<table" in lowered or "<td" in lowered
+        return _is_table_like_text(text)
 
     def _prefer_child_only_context(self, matched_children: list[Any]) -> bool:
         """Use precise child evidence alone when the match is already table/list scoped."""
@@ -229,10 +288,7 @@ class ResponseContextBuilder:
             return False
         if self._is_table_like_text(text):
             return False
-        normalized = {
-            line.lower().replace(".", "").replace(" ", "")
-            for line in cleaned_lines
-        }
+        normalized = {line.lower().replace(".", "").replace(" ", "") for line in cleaned_lines}
         tokens = [token for line in cleaned_lines for token in line.split()]
         return len(normalized) <= 2 and len(tokens) <= 24
 
@@ -301,7 +357,7 @@ class CitationBuilder:
             return None
         ranked = sorted(
             (child for child in matched_children if isinstance(child, dict)),
-            key=lambda child: float(child.get("score") or 0.0),
+            key=_matched_child_rank_key,
             reverse=True,
         )
         if not ranked:
@@ -409,9 +465,7 @@ class ResponseGenerationService:
             return {
                 "draft_response": "I apologize, but I encountered an error processing your request. Please try again.",
                 "messages": [
-                    AIMessage(
-                        content="I apologize, but I encountered an error. Please try again."
-                    )
+                    AIMessage(content="I apologize, but I encountered an error. Please try again.")
                 ],
                 "error": str(exc),
             }
@@ -445,8 +499,7 @@ class ResponseGenerationService:
         if state.processed_documents:
             last_doc = state.processed_documents[-1]
             response = (
-                f"I processed {last_doc.filename} "
-                f"with status {last_doc.processing_status.value}."
+                f"I processed {last_doc.filename} with status {last_doc.processing_status.value}."
             )
             if last_doc.quality_warning:
                 response = f"{response} Warning: {last_doc.quality_warning}"
@@ -470,8 +523,7 @@ class ResponseGenerationService:
 
         source_lines = ["", "Sources:"]
         source_lines.extend(
-            f"[{citation.id}] {self._format_citation_label(citation)}"
-            for citation in citations
+            f"[{citation.id}] {self._format_citation_label(citation)}" for citation in citations
         )
         return f"{content.rstrip()}\n" + "\n".join(source_lines)
 
