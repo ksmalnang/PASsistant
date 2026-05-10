@@ -1,66 +1,77 @@
 # PASsistant — Academic Services & Student Records Chatbot
 
-A **LangGraph-powered chatbot** that answers student questions about **academic services** and **personal student records**. Supports document upload with **GLM-4 Vision OCR**, knowledge-base retrieval via **Qdrant**, and is deployment-ready for **LangSmith/LangGraph Platform**.
+A **LangGraph-powered RAG chatbot** for Universitas Pasundan's Faculty of Engineering that answers student questions about **academic policies**, **curriculum**, and **student records**. Features hierarchical document chunking with contextual embeddings, hybrid retrieval (dense + BM25) with cross-encoder reranking, and GLM-OCR for PDF ingestion.
 
 ---
 
 ## Table of Contents
 
+- [Features](#features)
 - [Architecture](#architecture)
 - [Quick Start](#quick-start)
 - [API Endpoints](#api-endpoints)
+- [Document Management](#document-management)
+- [Evaluation](#evaluation)
 - [Environment Variables](#environment-variables)
 - [Development](#development)
-- [Deployment](#deployment)
+- [Documentation](#documentation)
 - [Tech Stack](#tech-stack)
 - [License](#license)
 
 ---
 
+## Features
+
+- **Hierarchical RAG** — Documents are parsed into a tree structure (chapters → sections → subsections), with parent-child chunk relationships for precise retrieval
+- **Contextual Embeddings** — Child chunks are embedded with breadcrumb context (section path) for better semantic matching
+- **Hybrid Retrieval** — Dense vector search + BM25 sparse vectors fused with RRF, or cross-encoder reranking
+- **GLM-OCR** — PDF documents are parsed page-by-page with layout-aware OCR preserving table structure
+- **Multi-query Expansion** — Queries are rewritten and expanded (including semester numeral normalization) for higher recall
+- **Guardrails** — Input injection detection + output PII masking + system prompt leak prevention
+- **RAGAS Evaluation** — Automated RAG quality assessment with Faithfulness, Answer Relevancy, Context Precision, and Context Recall
+- **Multi-channel** — REST API, WebSocket streaming, and Telegram bot integration
+
+---
+
 ## Architecture
 
-```
-src/
-├── agent.py              # Entry point & compiled LangGraph app
-├── api/                  # FastAPI server (REST + WebSocket)
-│   ├── routes/
-│   │   ├── chat.py       # Chat endpoint
-│   │   ├── documents.py  # Document upload endpoint
-│   │   ├── health.py     # Health check
-│   │   ├── router.py     # Route registration
-│   │   └── websocket.py  # WebSocket streaming
-│   ├── helpers.py        # API utilities
-│   ├── models.py         # Request/response schemas
-│   ├── services.py       # Orchestration logic
-│   └── sessions.py       # Session management
-├── telegram_bot/         # Telegram adapter, formatting, polling
-├── config/
-│   ├── logging.py        # RFC 5424 logging
-│   └── settings.py       # Pydantic settings
-├── graphs/
-│   └── workflow.py       # LangGraph graph definition
-├── services/             # Business logic layer
-│   ├── contracts.py      # Dependency contracts
-│   ├── document_processing.py
-│   ├── intent.py
-│   ├── response_generation.py
-│   ├── session_registry.py
-│   └── student_records.py
-└── utils/
-    ├── cache.py           # Redis-backed caching
-    ├── state.py           # Agent state schema
-    ├── nodes/             # LangGraph node adapters
-    └── tools/             # OCR, Qdrant, storage, student tools
+```mermaid
+flowchart TD
+    User([User Query]) --> InputGuard[Input Guard]
+    InputGuard --> Router[Router Node]
+    
+    Router -->|upload| OCR[OCR Ingest]
+    Router -->|student| Record[Record Lookup]
+    Router -->|query_document| Retrieval[Retrieval Node]
+    
+    OCR --> Response[Response Generation]
+    Record --> Response
+    Retrieval --> Response
+    
+    Response --> OutputGuard[Output Guard]
+    OutputGuard --> Result([Response])
 ```
 
-**Graph flow:**
+**Retrieval Pipeline Detail:**
 
-1. **Router** — classifies user intent (upload, student record, or general question)
-2. **Process document** — runs GLM-4 Vision OCR on uploaded files, chunks text hierarchically, embeds child chunks, and upserts into Qdrant
-3. **Handle student record** — queries/updates structured student data
-4. **Retrieve** — searches Qdrant (BM25 + dense vector) with optional reranking
-5. **Generate response** — LLM with full context
-6. **Check errors** — error handling and retry logic
+```mermaid
+flowchart LR
+    Q[User Question] --> Rewrite[LLM Rewrite]
+    Rewrite --> Queries["[original, rewritten, expanded]"]
+    Queries --> Gather["asyncio.gather()"]
+    
+    Gather --> S1[Embed + Qdrant + Rerank]
+    Gather --> S2[Embed + Qdrant + Rerank]
+    Gather --> S3[Embed + Qdrant + Rerank]
+    
+    S1 --> Merge[Merge & Dedupe]
+    S2 --> Merge
+    S3 --> Merge
+    
+    Merge --> Hydrate[Hydrate Parents]
+    Hydrate --> TopK[Top-K Results]
+    TopK --> LLM[LLM Response]
+```
 
 ---
 
@@ -70,49 +81,51 @@ src/
 
 - Python 3.11+
 - [UV](https://docs.astral.sh/uv/getting-started/installation/) package manager
-- Docker (for local Qdrant & Redis)
-- API keys for OpenAI and Zhipu AI (GLM-4)
+- Docker (for Qdrant & Redis)
+- API keys: OpenAI-compatible provider (e.g. OpenRouter), Zhipu AI (GLM-4 OCR)
 
 ### Setup
 
 ```bash
-# Clone and enter the project
 git clone <repo-url>
 cd student-records-chatbot
 
-# Create virtual environment & install deps
-uv venv .venv --python 3.11
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
+# Install dependencies
 uv sync --dev
 
 # Configure environment
 cp .env.example .env
-# Edit .env with your API keys (OPENAI_API_KEY, ZHIPU_API_KEY, etc.)
+# Edit .env with your API keys
 ```
 
 ### Run Infrastructure
 
 ```bash
-# Start Qdrant
+# Qdrant vector database
 docker run -p 6333:6333 -p 6334:6334 \
   -v $(pwd)/qdrant_storage:/qdrant/storage \
   qdrant/qdrant
 
-# Start Redis (optional, for caching)
+# Redis (optional, for caching)
 docker run -p 6379:6379 redis:7-alpine
 ```
 
-### Launch the App
+### Launch
 
 ```bash
-# Interactive CLI
-python -m src.agent
-
 # REST API server
-uvicorn src.api:app --reload --port 8000
+uv run uvicorn src.api:app --reload --port 8000
 
-# LangGraph dev server
-langgraph dev
+# Telegram bot (polling mode for dev)
+uv run python -m src.telegram_bot.polling
+```
+
+### Ingest Documents
+
+```bash
+curl -X POST http://localhost:8000/upload \
+  -F "files=@Kurikulum_IF_2021.pdf" \
+  -F "files=@Buku_Panduan_Akademik.pdf"
 ```
 
 ---
@@ -121,137 +134,100 @@ langgraph dev
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/health` | Health check |
-| `POST` | `/chat` | Send a message |
-| `POST` | `/chat/upload` | Chat with file upload |
-| `POST` | `/telegram/webhook` | Telegram webhook |
-| `POST` | `/upload` | Upload documents only |
-| `WS` | `/ws/{session_id}` | WebSocket streaming |
+| `GET` | `/health` | Health check (Qdrant + Redis status) |
+| `GET` | `/documents` | List ingested documents |
+| `DELETE` | `/documents/by-filename/{filename}` | Delete a document from index |
+| `POST` | `/upload` | Upload and ingest documents |
+| `POST` | `/chat` | Send a chat message |
+| `POST` | `/chat/upload` | Chat with file attachment |
+| `POST` | `/chat/stream` | Streaming chat (SSE) |
+| `POST` | `/chat/upload/stream` | Streaming chat with file |
+| `POST` | `/telegram/webhook` | Telegram webhook receiver |
+| `WS` | `/ws/{thread_id}` | WebSocket streaming |
+
+---
+
+## Document Management
 
 ```bash
-# Quick examples
-curl http://localhost:8000/health
+# List all ingested documents
+curl http://localhost:8000/documents
 
-curl -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{"message": "What is my GPA?"}'
+# Delete a specific document (re-ingest after pipeline changes)
+curl -X DELETE "http://localhost:8000/documents/by-filename/Kurikulum%20IF%202021.pdf"
 
-curl -X POST http://localhost:8000/chat/upload \
-  -F "message=Process this transcript" \
-  -F "files=@transcript.pdf"
-
-python -m src.telegram_bot.polling
+# Re-upload
+curl -X POST http://localhost:8000/upload -F "files=@Kurikulum_IF_2021.pdf"
 ```
+
+---
+
+## Evaluation
+
+Run RAGAS evaluation to measure retrieval and generation quality:
+
+```bash
+# Live evaluation against current index
+uv run python -m src.eval.ragas \
+    --dataset src/eval/datasets/ragas_dataset.jsonl \
+    --mode live
+
+# From pre-computed fixtures (no API calls for pipeline)
+uv run python -m src.eval.ragas \
+    --dataset src/eval/datasets/ragas_dataset.jsonl \
+    --mode fixture
+```
+
+See [docs/evaluation.md](docs/evaluation.md) for full evaluation guide.
 
 ---
 
 ## Environment Variables
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `OPENAI_API_KEY` | OpenAI API key | Required |
-| `OPENAI_BASE_URL` | OpenAI-compatible base URL | `https://openrouter.ai/api/v1` |
-| `LLM_MODEL` | Primary LLM model | `deepseek/deepseek-v4-flash:exacto` |
-| `LLM_REASONING_ENABLED` | Enable provider reasoning controls | `true` |
-| `LLM_REASONING_EFFORT` | Reasoning effort level | `medium` |
-| `LLM_REASONING_MAX_TOKENS` | Max reasoning tokens (overrides effort) | — |
-| `LLM_REASONING_EXCLUDE` | Suppress reasoning in output | `true` |
-| `EMBEDDING_MODEL` | Embedding model for vector search | `qwen/qwen3-embedding-8b:nitro` |
-| `ZHIPU_API_KEY` | Zhipu AI API key (GLM-4 OCR) | Required |
-| `ZHIPU_BASE_URL` | Zhipu AI base URL | `https://open.bigmodel.cn/api/paas/v4` |
-| `GLM_OCR_MODEL` | OCR vision model | `glm-4v-flash` |
-| `QDRANT_URL` | Qdrant instance URL | `http://localhost:6333` |
-| `QDRANT_API_KEY` | Qdrant API key | — |
-| `QDRANT_COLLECTION_NAME` | Vector collection name | `student_documents` |
-| `VECTOR_SIZE` | Embedding dimension | `4096` |
-| `RETRIEVAL_STRATEGY` | Ranking strategy (`similarity`, `rrf`, `reranker`) | `similarity` |
-| `RETRIEVAL_TOP_K` | Number of parent chunks retrieved, rendered in response context, and cited | `5` |
-| `RERANKER_MODEL` | Reranker model (if reranking enabled) | — |
-| `RERANKER_BASE_URL` | Remote reranker endpoint | — |
-| `RERANKER_API_KEY` | Remote reranker API key | — |
-| `RERANKER_CANDIDATE_MULTIPLIER` | Overfetch multiplier before reranking | `6` |
-| `REDIS_URL` | Redis URL (caching) | — |
-| `REDIS_KEY_PREFIX` | Redis key namespace | `student-records-chatbot` |
-| `REDIS_CACHE_TTL_SECONDS` | Cache TTL | `300` |
-| `LANGSMITH_TRACING` | Enable LangSmith tracing | `true` |
-| `LANGSMITH_ENDPOINT` | LangSmith API endpoint | `https://api.smith.langchain.com` |
-| `LANGSMITH_API_KEY` | LangSmith API key | Required |
-| `LANGSMITH_PROJECT` | LangSmith project name | `student-records-chatbot` |
-| `APP_ENV` | Application environment | `development` |
-| `DEBUG` | Debug mode | `false` |
-| `LOG_LEVEL` | Log level | `INFO` |
-| `DATA_DIR` | Base data directory | `data` |
-| `TELEGRAM_ENABLED` | Enable Telegram integration | `false` |
-| `TELEGRAM_BOT_TOKEN` | Telegram bot token | — |
-| `TELEGRAM_WEBHOOK_URL` | Public webhook URL | — |
-| `TELEGRAM_WEBHOOK_SECRET_TOKEN` | Webhook secret token | — |
-| `TELEGRAM_MAX_FILE_BYTES` | Max Telegram upload size in bytes | `20000000` |
+See [`.env.example`](.env.example) for all available variables. Key ones:
 
-## Telegram
-
-Use webhook mode in production and polling mode for local development.
-
-```bash
-# Local development
-python -m src.telegram_bot.polling
-
-# Register webhook explicitly
-curl -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"url\": \"${TELEGRAM_WEBHOOK_URL}\",
-    \"secret_token\": \"${TELEGRAM_WEBHOOK_SECRET_TOKEN}\",
-    \"allowed_updates\": [\"message\"]
-  }"
-
-curl "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo"
-```
-
-Group chats use a shared session per Telegram chat id: `telegram:{chat_id}`.
+| Variable | Description |
+|----------|-------------|
+| `OPENAI_API_KEY` | LLM provider API key (OpenRouter, OpenAI, etc.) |
+| `OPENAI_BASE_URL` | LLM provider base URL |
+| `LLM_MODEL` | Primary LLM model for responses |
+| `EMBEDDING_MODEL` | Embedding model for vector search |
+| `ZHIPU_API_KEY` | Zhipu AI key for GLM-4 OCR |
+| `QDRANT_URL` | Qdrant vector database URL |
+| `RETRIEVAL_STRATEGY` | `similarity`, `rrf`, or `reranker` |
+| `RETRIEVAL_TOP_K` | Number of chunks retrieved per query |
+| `RERANKER_MODEL` | Cross-encoder model (when strategy=reranker) |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token |
 
 ---
 
 ## Development
 
 ```bash
-# Run tests
-pytest
+# Run all tests
+uv run pytest
 
-# With coverage
-pytest --cov=src --cov-report=html
+# Run specific test suite
+uv run pytest tests/test_prod_readiness.py -v
 
 # Format & lint
-ruff format .
-ruff check .
+uv run ruff format .
+uv run ruff check .
 
 # Type check
-basedpyright src/
+uv run basedpyright src/
 ```
 
 ---
 
-## Deployment
+## Documentation
 
-**LangGraph Platform (LangSmith):**
-
-```bash
-langgraph login
-langgraph deploy
-```
-
-The `langgraph.json` config is already set up pointing to `src/agent.py:compiled_app`.
-
-**Docker:**
-
-```dockerfile
-FROM python:3.11-slim
-WORKDIR /app
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
-COPY pyproject.toml uv.lock ./
-COPY src/ ./src/
-RUN uv sync --frozen --no-dev
-CMD ["uvicorn", "src.api:app", "--host", "0.0.0.0", "--port", "8000"]
-```
+| Document | Description |
+|----------|-------------|
+| [docs/architecture.md](docs/architecture.md) | System architecture and pipeline design |
+| [docs/retrieval-pipeline.md](docs/retrieval-pipeline.md) | Retrieval strategy, chunking, and indexing details |
+| [docs/evaluation.md](docs/evaluation.md) | RAGAS evaluation guide |
+| [docs/deployment.md](docs/deployment.md) | Deployment and infrastructure guide |
 
 ---
 
@@ -260,15 +236,16 @@ CMD ["uvicorn", "src.api:app", "--host", "0.0.0.0", "--port", "8000"]
 | Component | Technology |
 |-----------|------------|
 | Agent Framework | LangGraph |
-| LLM | OpenAI-compatible (configurable) |
+| LLM | OpenAI-compatible (DeepSeek, GPT-4o, Claude, etc.) |
 | OCR | GLM-4 Vision (Zhipu AI) |
-| Vector DB | Qdrant |
-| Embeddings | Configurable |
+| Vector DB | Qdrant (dense + sparse vectors) |
+| Embeddings | Configurable (Qwen, OpenAI, etc.) |
+| Reranker | Jina Reranker v2 / FastEmbed cross-encoder |
 | API | FastAPI + Uvicorn |
-| Config | Pydantic Settings |
-| Package Manager | UV |
 | Caching | Redis |
+| Evaluation | RAGAS 0.4.3 |
 | Observability | LangSmith |
+| Package Manager | UV |
 
 ---
 
