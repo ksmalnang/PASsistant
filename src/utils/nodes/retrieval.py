@@ -1,5 +1,6 @@
 """Retrieval node."""
 
+import asyncio
 import logging
 import re
 from typing import Any
@@ -9,18 +10,11 @@ from langchain_core.messages import HumanMessage
 from src.config import get_settings
 from src.services.contracts import DocumentRetriever
 from src.utils.nodes.llm import get_llm
+from src.utils.nodes.prompts import QUERY_REWRITE_PROMPT
 from src.utils.state import AgentState, DocumentType
 from src.utils.tools import VectorStoreTools
 
 logger = logging.getLogger(__name__)
-
-QUERY_REWRITE_PROMPT = """Given the user question below, extract a concise search query
-that would best retrieve relevant academic policy documents. Focus on key terms,
-regulations, and specific topics mentioned.
-
-User question: {question}
-
-Search query (Indonesian, concise, keyword-rich):"""
 
 
 class RetrievalNode:
@@ -150,13 +144,18 @@ class RetrievalNode:
                     ),
                 }
             merged_results: list[dict[str, Any]] = []
-            for query in queries:
-                query_results = await self.vector_tools.search_similar(
-                    query=query,
-                    document_type=doc_type,
-                    top_k=self.top_k,
-                    score_threshold=0.2,
-                )
+            query_results_list = await asyncio.gather(
+                *[
+                    self.vector_tools.search_similar(
+                        query=query,
+                        document_type=doc_type,
+                        top_k=self.top_k,
+                        score_threshold=0.2,
+                    )
+                    for query in queries
+                ]
+            )
+            for query, query_results in zip(queries, query_results_list):
                 merged_results = self._merge_results(merged_results, query_results, query)
 
             confidence, warning = self._score_retrieval_confidence(
@@ -253,17 +252,20 @@ class RetrievalNode:
         return " ".join(part for part in parts if part).strip()
 
     _ARABIC_TO_ROMAN = {
-        "1": "I", "2": "II", "3": "III", "4": "IV",
-        "5": "V", "6": "VI", "7": "VII", "8": "VIII",
-        "9": "IX", "10": "X",
+        "1": "I",
+        "2": "II",
+        "3": "III",
+        "4": "IV",
+        "5": "V",
+        "6": "VI",
+        "7": "VII",
+        "8": "VIII",
+        "9": "IX",
+        "10": "X",
     }
     _ROMAN_TO_ARABIC = {v: k for k, v in _ARABIC_TO_ROMAN.items()}
-    _SEMESTER_ARABIC_PATTERN = re.compile(
-        r"\b(semester)\s+(\d{1,2})\b", re.IGNORECASE
-    )
-    _SEMESTER_ROMAN_PATTERN = re.compile(
-        r"\b(semester)\s+([IVXL]+)\b", re.IGNORECASE
-    )
+    _SEMESTER_ARABIC_PATTERN = re.compile(r"\b(semester)\s+(\d{1,2})\b", re.IGNORECASE)
+    _SEMESTER_ROMAN_PATTERN = re.compile(r"\b(semester)\s+([IVXL]+)\b", re.IGNORECASE)
 
     def _normalize_semester_numerals(self, query: str) -> str:
         """Replace 'semester 5' with 'semester V' (and vice versa) for retrieval."""
@@ -273,9 +275,7 @@ class RetrievalNode:
             arabic = match.group(2)
             roman = self._ARABIC_TO_ROMAN.get(arabic)
             if roman:
-                return self._SEMESTER_ARABIC_PATTERN.sub(
-                    rf"\1 {roman}", query
-                )
+                return self._SEMESTER_ARABIC_PATTERN.sub(rf"\1 {roman}", query)
 
         # Roman → Arabic (e.g. "semester V" → "semester 5")
         match = self._SEMESTER_ROMAN_PATTERN.search(query)
@@ -283,9 +283,7 @@ class RetrievalNode:
             roman = match.group(2).upper()
             arabic = self._ROMAN_TO_ARABIC.get(roman)
             if arabic:
-                return self._SEMESTER_ROMAN_PATTERN.sub(
-                    rf"\1 {arabic}", query
-                )
+                return self._SEMESTER_ROMAN_PATTERN.sub(rf"\1 {arabic}", query)
 
         return query
 
