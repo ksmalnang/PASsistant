@@ -73,7 +73,7 @@ class SearchOperations:
         query: str,
         document_type: DocumentType | None = None,
         top_k: int = 5,
-        score_threshold: float = 0.5,
+        score_threshold: float = 0.2,
     ) -> list[dict]:
         """
         Retrieve relevant indexed document context using the configured strategy.
@@ -458,7 +458,10 @@ class SearchOperations:
         normalized = " ".join(text.split()).strip().lower()
         if not normalized:
             return False
-        return any(marker in normalized for marker in self._POLICY_SCOPE_MARKERS + self._POLICY_RULE_MARKERS)
+        return any(
+            marker in normalized
+            for marker in self._POLICY_SCOPE_MARKERS + self._POLICY_RULE_MARKERS
+        )
 
     def _build_search_cache_key(
         self,

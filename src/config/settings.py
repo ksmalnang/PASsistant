@@ -92,6 +92,11 @@ class Settings(BaseSettings):
         default="similarity",
         description="Retrieval ranking strategy: similarity, rrf, or reranker",
     )
+    RETRIEVAL_TOP_K: int = Field(
+        default=5,
+        ge=1,
+        description="Number of hydrated parent chunks to retrieve and expose to response generation",
+    )
     RERANKER_MODEL: Optional[str] = Field(
         default=None,
         description="Reranker model used when RETRIEVAL_STRATEGY=reranker",

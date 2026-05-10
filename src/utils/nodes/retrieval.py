@@ -6,6 +6,7 @@ from typing import Any
 
 from langchain_core.messages import HumanMessage
 
+from src.config import get_settings
 from src.services.contracts import DocumentRetriever
 from src.utils.nodes.llm import get_llm
 from src.utils.state import AgentState, DocumentType
@@ -105,13 +106,6 @@ class RetrievalNode:
         "perwalian",
         "krs",
         "syarat",
-        "boleh",
-        "bisa",
-        "kapan",
-        "bulan",
-        "jadwal",
-        "deadline",
-        "batas",
         "ketentuan",
         "aturan",
     )
@@ -124,6 +118,7 @@ class RetrievalNode:
         self.vector_tools = retriever or VectorStoreTools()
         self._llm_provider = llm_provider
         self._llm = None
+        self.top_k = get_settings().RETRIEVAL_TOP_K
 
     async def run(self, state: AgentState) -> dict:
         """
@@ -159,8 +154,8 @@ class RetrievalNode:
                 query_results = await self.vector_tools.search_similar(
                     query=query,
                     document_type=doc_type,
-                    top_k=5,
-                    score_threshold=0.4,
+                    top_k=self.top_k,
+                    score_threshold=0.2,
                 )
                 merged_results = self._merge_results(merged_results, query_results, query)
 
@@ -178,7 +173,7 @@ class RetrievalNode:
                 },
             )
             return {
-                "retrieved_chunks": merged_results[:5],
+                "retrieved_chunks": merged_results[: self.top_k],
                 "requires_retrieval": False,
                 "response_confidence": confidence,
                 "retrieval_warning": warning,
@@ -245,14 +240,54 @@ class RetrievalNode:
             "cuti": "cuti akademik",
             "masa studi": "akhir masa studi",
             "drop out": "dikeluarkan",
-            "semester": "semester berturut-turut",
         }
         parts = [query.strip()]
         lowered = query.lower()
         for source, target in expansions.items():
             if source in lowered and target not in lowered:
                 parts.append(target)
+        # Normalize semester numerals (arabic ↔ roman) for lexical matching
+        normalized = self._normalize_semester_numerals(" ".join(parts))
+        if normalized and normalized.lower() != " ".join(parts).lower():
+            return normalized
         return " ".join(part for part in parts if part).strip()
+
+    _ARABIC_TO_ROMAN = {
+        "1": "I", "2": "II", "3": "III", "4": "IV",
+        "5": "V", "6": "VI", "7": "VII", "8": "VIII",
+        "9": "IX", "10": "X",
+    }
+    _ROMAN_TO_ARABIC = {v: k for k, v in _ARABIC_TO_ROMAN.items()}
+    _SEMESTER_ARABIC_PATTERN = re.compile(
+        r"\b(semester)\s+(\d{1,2})\b", re.IGNORECASE
+    )
+    _SEMESTER_ROMAN_PATTERN = re.compile(
+        r"\b(semester)\s+([IVXL]+)\b", re.IGNORECASE
+    )
+
+    def _normalize_semester_numerals(self, query: str) -> str:
+        """Replace 'semester 5' with 'semester V' (and vice versa) for retrieval."""
+        # Arabic → Roman (e.g. "semester 5" → "semester V")
+        match = self._SEMESTER_ARABIC_PATTERN.search(query)
+        if match:
+            arabic = match.group(2)
+            roman = self._ARABIC_TO_ROMAN.get(arabic)
+            if roman:
+                return self._SEMESTER_ARABIC_PATTERN.sub(
+                    rf"\1 {roman}", query
+                )
+
+        # Roman → Arabic (e.g. "semester V" → "semester 5")
+        match = self._SEMESTER_ROMAN_PATTERN.search(query)
+        if match:
+            roman = match.group(2).upper()
+            arabic = self._ROMAN_TO_ARABIC.get(roman)
+            if arabic:
+                return self._SEMESTER_ROMAN_PATTERN.sub(
+                    rf"\1 {arabic}", query
+                )
+
+        return query
 
     def _extract_keywords(self, text: str) -> str:
         """Heuristic fallback for query rewriting when no LLM is configured."""

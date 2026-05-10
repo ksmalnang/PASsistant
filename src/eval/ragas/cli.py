@@ -38,13 +38,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--openrouter-min-interval-seconds",
         type=float,
-        default=1.0,
+        default=0.3,
         help="Minimum delay between OpenRouter requests.",
     )
     parser.add_argument(
         "--openrouter-jitter-seconds",
         type=float,
-        default=0.25,
+        default=0.15,
         help="Random jitter added to OpenRouter request pacing.",
     )
     parser.add_argument(

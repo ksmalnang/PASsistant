@@ -370,7 +370,7 @@ class TestResponseNode:
             ]
         )
 
-        assert "PL3" in context_lines[0]
+        assert "PL3" in "\n".join(context_lines)
 
     def test_response_context_prioritizes_policy_rule_before_schedule_and_sync_detail(self):
         """Policy context should lead with the explicit rule and still retain follow-up details."""

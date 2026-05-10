@@ -5,16 +5,28 @@ import mimetypes
 from typing import Annotated, Any
 
 from fastapi import APIRouter, File, HTTPException, UploadFile, status
+from pydantic import BaseModel
 
 from src.api.models import (
+    DocumentDeleteResponse,
     DocumentIngestionResponse,
     ErrorResponse,
 )
 from src.api.services import handle_knowledge_base_ingestion
 from src.utils.tools.ocr import PDF_MIME_TYPE, SUPPORTED_MIME_TYPES, GLMOCRTool
+from src.utils.tools import VectorStoreTools
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+class DocumentListItem(BaseModel):
+    """Summary of an ingested document in the knowledge base."""
+
+    document_id: str
+    filename: str
+    parent_chunks: int
+    doc_title: str | None = None
 UploadFiles = Annotated[
     list[UploadFile],
     File(
@@ -169,4 +181,94 @@ async def ingest_knowledge_base_documents(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to ingest knowledge-base documents.",
+        ) from exc
+
+
+@router.get(
+    "/documents",
+    response_model=list[DocumentListItem],
+    status_code=status.HTTP_200_OK,
+    summary="List ingested documents",
+    description="Return a summary of all documents currently in the retrieval index.",
+)
+async def list_documents() -> list[DocumentListItem]:
+    """List all ingested documents in the knowledge base."""
+    tools = VectorStoreTools()
+    parent_data = tools.parent_store._read_all()
+
+    docs: dict[str, DocumentListItem] = {}
+    for record in parent_data.values():
+        doc_id = record.get("document_id", "")
+        if doc_id in docs:
+            docs[doc_id].parent_chunks += 1
+            continue
+        docs[doc_id] = DocumentListItem(
+            document_id=doc_id,
+            filename=record.get("filename", ""),
+            parent_chunks=1,
+            doc_title=(record.get("metadata") or {}).get("doc_title"),
+        )
+
+    return sorted(docs.values(), key=lambda d: d.filename)
+
+
+@router.delete(
+    "/documents/by-filename/{filename:path}",
+    response_model=DocumentDeleteResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Delete an ingested document by filename",
+    description=(
+        "Remove a previously ingested document from the retrieval index. "
+        "Deletes all vector chunks and parent chunks associated with the filename."
+    ),
+    responses={
+        status.HTTP_404_NOT_FOUND: {
+            "model": ErrorResponse,
+            "description": "No document with the given filename exists in the index.",
+        },
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {
+            "model": ErrorResponse,
+            "description": "The server failed to delete the document.",
+        },
+    },
+)
+async def delete_document_by_filename(filename: str) -> DocumentDeleteResponse:
+    """Delete an ingested document and its chunks by filename."""
+    try:
+        tools = VectorStoreTools()
+        parent_data = tools.parent_store._read_all()
+
+        # Find document_id(s) matching the filename
+        matching_doc_ids = {
+            record["document_id"]
+            for record in parent_data.values()
+            if record.get("filename") == filename
+        }
+
+        if not matching_doc_ids:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No ingested document found with filename '{filename}'.",
+            )
+
+        for document_id in matching_doc_ids:
+            tools.delete_document_chunks(document_id)
+            logger.info(
+                "Deleted document by filename",
+                extra={"deleted_filename": filename, "document_id": document_id},
+            )
+
+        return DocumentDeleteResponse(
+            success=True,
+            document_id=sorted(matching_doc_ids)[0],
+            filename=filename,
+            chunks_deleted=True,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Document deletion failed: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete document '{filename}'.",
         ) from exc

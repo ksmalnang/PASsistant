@@ -67,7 +67,7 @@ class DocumentRetriever(Protocol):
         query: str,
         document_type: DocumentType | None = None,
         top_k: int = 5,
-        score_threshold: float = 0.5,
+        score_threshold: float = 0.2,
     ) -> list[dict[str, Any]]:
         """Run retrieval using the configured similarity, RRF, or reranker strategy.
 

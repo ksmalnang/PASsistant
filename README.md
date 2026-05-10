@@ -165,6 +165,7 @@ python -m src.telegram_bot.polling
 | `QDRANT_COLLECTION_NAME` | Vector collection name | `student_documents` |
 | `VECTOR_SIZE` | Embedding dimension | `4096` |
 | `RETRIEVAL_STRATEGY` | Ranking strategy (`similarity`, `rrf`, `reranker`) | `similarity` |
+| `RETRIEVAL_TOP_K` | Number of parent chunks retrieved, rendered in response context, and cited | `5` |
 | `RERANKER_MODEL` | Reranker model (if reranking enabled) | — |
 | `RERANKER_BASE_URL` | Remote reranker endpoint | — |
 | `RERANKER_API_KEY` | Remote reranker API key | — |

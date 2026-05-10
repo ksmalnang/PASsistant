@@ -18,7 +18,11 @@ from src.eval.ragas import (
     load_dataset,
     load_fixtures,
 )
-from src.eval.ragas.evaluator import _build_sequential_llm_class, _strip_citation_markers
+from src.eval.ragas.evaluator import (
+    _build_sequential_llm_class,
+    _DirectOpenRouterChatLLM,
+    _strip_citation_markers,
+)
 
 # ── fixtures directory ───────────────────────────────────────────────────────
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -295,6 +299,53 @@ class TestSequentialOpenRouterLLM:
         llm, _mock_client = self._make_llm()
         result = LLMResult(generations=[])
         assert llm.is_finished(result) is False
+
+
+class TestDirectOpenRouterChatLLM:
+    """Unit tests for the live-eval pipeline LLM adapter."""
+
+    def test_invoke_formats_messages_and_returns_ai_message(self) -> None:
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content="answer"),
+                )
+            ]
+        )
+        llm = _DirectOpenRouterChatLLM(mock_client, "test-model")
+
+        response = llm.invoke(
+            [
+                SystemMessage(content="system prompt"),
+                HumanMessage(content="question"),
+            ]
+        )
+
+        assert response.content == "answer"
+        mock_client.chat.completions.create.assert_called_once_with(
+            model="test-model",
+            messages=[
+                {"role": "system", "content": "system prompt"},
+                {"role": "user", "content": "question"},
+            ],
+            temperature=0.3,
+        )
+
+    def test_init_pipeline_services_uses_direct_llm_provider(self) -> None:
+        config = RagasEvalConfig(dataset_path=Path("dummy.jsonl"))
+        evaluator = RagasEvaluator(config)
+
+        evaluator._retriever = object()
+        evaluator._retrieval_node = object()
+        evaluator._get_pipeline_llm = MagicMock(return_value=None)  # type: ignore[method-assign]
+        evaluator._init_pipeline_services()
+
+        evaluator._response_service._llm_provider()
+
+        evaluator._get_pipeline_llm.assert_called_once()
 
 
 # ===========================================================================

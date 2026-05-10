@@ -6,7 +6,7 @@ from typing import Any
 from qdrant_client.http.models import SparseVector
 
 BM25_MODEL_NAME = "Qdrant/bm25"
-BM25_DISABLE_STEMMER = True
+BM25_DISABLE_STEMMER = False
 
 
 class BM25VectorOperations:
