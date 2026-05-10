@@ -61,6 +61,125 @@ class TestRouterNode:
 
         assert retrieval._resolve_document_type("query_student", query) is None
 
+    def test_extract_keywords_drops_conversational_filler_for_policy_queries(self):
+        """Keyword extraction should retain policy terms and drop Indonesian filler words."""
+        retrieval = RetrievalNode()
+
+        extracted = retrieval._extract_keywords(
+            "Kak, kalau aku telat bayar DPP cicilan pertama, masih bisa ikut perwalian nggak?"
+        )
+
+        assert extracted == "telat bayar dpp cicilan pertama perwalian"
+
+    def test_rrf_policy_retrieval_with_explicit_rule_is_not_marked_low_confidence(self):
+        """Low absolute RRF scores should not trigger warnings when the rule is explicit."""
+        retrieval = RetrievalNode()
+        retrieval.vector_tools.retrieval_strategy = "rrf"
+        results = [
+            {
+                "score": 0.028,
+                "rrf_score": 0.028,
+                "breadcrumb": (
+                    "IV.1. Registrasi dan Perwalian > "
+                    "IV.1.1. Tahap Pendaftaran dan Pembayaran DPP"
+                ),
+                "text": "Tahap Pendaftaran dan Pembayaran DPP",
+                "matched_children": [
+                    {
+                        "chunk_type": "paragraph",
+                        "score": 0.016,
+                        "text": (
+                            "Perwalian dapat dilakukan setelah mahasiswa memenuhi "
+                            "persyaratan administrasi pembayaran uang kuliah "
+                            "yang disyaratkan dari DPP/SPP Tahun Akademik yang bersangkutan."
+                        ),
+                    },
+                    {
+                        "chunk_type": "table",
+                        "score": 0.015,
+                        "text": (
+                            "DPP dana pelaksanaan pendidikan : dibayarkan 4 kali cicilan "
+                            "Cicilan I 25% : Juli"
+                        ),
+                    },
+                ],
+            },
+            {
+                "score": 0.018,
+                "rrf_score": 0.018,
+                "breadcrumb": "Lampiran",
+                "text": "Lampiran susunan pengurus",
+                "matched_children": [
+                    {"chunk_type": "paragraph", "score": 0.011, "text": "Susunan pengurus."}
+                ],
+            },
+        ]
+
+        confidence, warning = retrieval._score_retrieval_confidence(
+            "Kak, kalau aku telat bayar DPP cicilan pertama, masih bisa ikut perwalian nggak?",
+            results,
+        )
+
+        assert confidence >= 0.45
+        assert warning is None
+        assert results[0]["query_overlap_ratio"] >= 0.60
+
+    def test_reranker_policy_retrieval_with_explicit_rule_is_not_marked_low_confidence(self):
+        """Moderate reranker scores should still count as high-confidence policy support."""
+        retrieval = RetrievalNode()
+        retrieval.vector_tools.retrieval_strategy = "reranker"
+        results = [
+            {
+                "score": 0.32,
+                "reranker_score": 0.32,
+                "breadcrumb": (
+                    "IV.1. Registrasi dan Perwalian > "
+                    "IV.1.1. Tahap Pendaftaran dan Pembayaran DPP"
+                ),
+                "text": "Tahap Pendaftaran dan Pembayaran DPP",
+                "matched_children": [
+                    {
+                        "chunk_type": "paragraph",
+                        "score": 0.016,
+                        "text": (
+                            "Perwalian dapat dilakukan setelah mahasiswa memenuhi "
+                            "persyaratan administrasi pembayaran uang kuliah "
+                            "yang disyaratkan dari DPP/SPP Tahun Akademik yang bersangkutan."
+                        ),
+                    },
+                    {
+                        "chunk_type": "table",
+                        "score": 0.015,
+                        "text": (
+                            "DPP dana pelaksanaan pendidikan : dibayarkan 4 kali cicilan "
+                            "Cicilan I 25% : Juli"
+                        ),
+                    },
+                ],
+            },
+            {
+                "score": 0.21,
+                "reranker_score": 0.21,
+                "breadcrumb": "VI.4. Pelayanan Administrasi Akademik",
+                "text": "Prosedur Bebas Mata Kuliah hanya tinggal Tugas Akhir",
+                "matched_children": [
+                    {
+                        "chunk_type": "paragraph",
+                        "score": 0.015,
+                        "text": "Mahasiswa membayar tagihan cicilan I sebelum perwalian tugas akhir.",
+                    }
+                ],
+            },
+        ]
+
+        confidence, warning = retrieval._score_retrieval_confidence(
+            "Kak, kalau aku telat bayar DPP cicilan pertama, masih bisa ikut perwalian nggak?",
+            results,
+        )
+
+        assert confidence >= 0.45
+        assert warning is None
+
     def test_router_detects_academic_service_query(self):
         """Router should classify academic service questions for retrieval."""
         router = RouterNode()
@@ -251,7 +370,60 @@ class TestResponseNode:
             ]
         )
 
-        assert "PL3" in context_lines[0]
+        assert "PL3" in "\n".join(context_lines)
+
+    def test_response_context_prioritizes_policy_rule_before_schedule_and_sync_detail(self):
+        """Policy context should lead with the explicit rule and still retain follow-up details."""
+        builder = ResponseContextBuilder()
+
+        context_lines = builder._build_retrieval_context(
+            [
+                {
+                    "filename": "Wadek1-Buku Panduan Akademik FT Unpas 2023-2024 Publish.pdf",
+                    "breadcrumb": "IV.1.1. Tahap Pendaftaran dan Pembayaran DPP",
+                    "score": 0.32,
+                    "text": "Tahap Pendaftaran dan Pembayaran DPP",
+                    "matched_children": [
+                        {
+                            "chunk_type": "table",
+                            "score": 0.93,
+                            "chunk_id": "iv_1_1.table_1.part_1",
+                            "text": (
+                                "DPP dana pelaksanaan pendidikan : dibayarkan 4 kali cicilan "
+                                "Cicilan I 25% : Juli"
+                            ),
+                        },
+                        {
+                            "chunk_type": "paragraph",
+                            "score": 0.89,
+                            "chunk_id": "iv_1_1.paragraph_1",
+                            "text": (
+                                "Perwalian dapat dilakukan setelah mahasiswa memenuhi "
+                                "persyaratan administrasi pembayaran uang kuliah "
+                                "yang disyaratkan dari DPP/SPP Tahun Akademik yang bersangkutan."
+                            ),
+                        },
+                        {
+                            "chunk_type": "paragraph",
+                            "score": 0.88,
+                            "chunk_id": "iv_1_1.paragraph_2",
+                            "text": (
+                                "Jika status pembayaran belum sinkron antara dpp.unpas.ac.id "
+                                "dengan SITU 2.0 maka silahkan melaporkan status pembayaran."
+                            ),
+                        },
+                    ],
+                }
+            ]
+        )
+
+        matched_section = "\n".join(context_lines).split("Matched child evidence:\n", 1)[1]
+        assert "Perwalian dapat dilakukan setelah" in matched_section
+        assert "Cicilan I 25% : Juli" in matched_section
+        assert "SITU 2.0" in matched_section
+        assert matched_section.index("Perwalian dapat dilakukan setelah") < matched_section.index(
+            "Cicilan I 25% : Juli"
+        )
 
 
 class TestAgentState:

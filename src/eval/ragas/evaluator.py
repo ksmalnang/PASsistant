@@ -9,6 +9,8 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from langchain_core.messages import AIMessage, BaseMessage
+
 from src.eval.ragas.data import load_dataset, load_fixtures
 from src.eval.ragas.models import ProgressTracker, RagasEvalConfig, RagasEvalSample
 from src.eval.ragas.reporting import build_report, coerce_score, save_report
@@ -16,11 +18,16 @@ from src.eval.ragas.reporting import build_report, coerce_score, save_report
 logger = logging.getLogger(__name__)
 
 _CITATION_RE = re.compile(r"\[\d+\]")
+_SOURCES_SECTION_RE = re.compile(
+    r"\n\s*(?:Sources|Sumber|References)\s*:\s*\n.*",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _strip_citation_markers(text: str) -> str:
-    """Remove inline numeric citation markers (e.g. [1], [2]) from text."""
-    return _CITATION_RE.sub("", text).strip()
+    """Remove inline numeric citation markers and trailing Sources section."""
+    cleaned = _SOURCES_SECTION_RE.sub("", text)
+    return _CITATION_RE.sub("", cleaned).strip()
 
 
 class _EmbeddingAdapter:
@@ -47,6 +54,33 @@ class _EmbeddingAdapter:
 
     def set_run_config(self, run_config: Any) -> None:
         self.run_config = run_config
+
+
+class _DirectOpenRouterChatLLM:
+    """Invoke-compatible chat adapter used by live eval generation."""
+
+    def __init__(self, client: Any, model: str, temperature: float = 0.3):
+        self.client = client
+        self.model = model
+        self.temperature = temperature
+
+    def invoke(self, messages: list[BaseMessage], /, **kwargs: Any) -> AIMessage:
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[self._format_message(message) for message in messages],
+            temperature=kwargs.get("temperature", self.temperature),
+        )
+        content = response.choices[0].message.content or ""
+        return AIMessage(content=content)
+
+    def _format_message(self, message: BaseMessage) -> dict[str, Any]:
+        role = {
+            "system": "system",
+            "human": "user",
+            "ai": "assistant",
+        }.get(getattr(message, "type", ""), "user")
+        content = getattr(message, "content", "")
+        return {"role": role, "content": content if isinstance(content, str) else str(content)}
 
 
 @functools.lru_cache(maxsize=1)
@@ -95,6 +129,7 @@ def _build_sequential_llm_class() -> Any:
                     "messages": [{"role": "user", "content": prompt_text}],
                     "temperature": temperature,
                     "n": 1,
+                    "response_format": {"type": "json_object"},
                 }
                 if stop is not None:
                     kwargs["stop"] = stop
@@ -173,12 +208,54 @@ class RagasEvaluator:
         return {"reasoning": reasoning}
 
     async def run(self) -> dict[str, Any]:
-        logger.info("Loading evaluation dataset from %s", self.config.dataset_path)
+        run_start = time.perf_counter()
+        logger.info(
+            "═══ RAGAS Evaluation Started ═══ dataset=%s | mode=%s | metrics=%s | samples=loading...",
+            self.config.dataset_path.name,
+            self.config.mode,
+            self.config.metrics_tier,
+        )
         samples = load_dataset(self.config.dataset_path)
+        logger.info(
+            "Dataset loaded: %d samples from %s",
+            len(samples),
+            self.config.dataset_path.name,
+        )
+
+        pipeline_start = time.perf_counter()
         samples = await self._execute_pipeline(samples)
+        pipeline_elapsed = time.perf_counter() - pipeline_start
+        logger.info(
+            "Pipeline phase completed in %.1fs — %d samples processed, %d with responses",
+            pipeline_elapsed,
+            len(samples),
+            sum(1 for s in samples if s.response),
+        )
+
+        eval_start = time.perf_counter()
         results = self._evaluate_with_ragas(samples)
+        eval_elapsed = time.perf_counter() - eval_start
+        logger.info("RAGAS scoring phase completed in %.1fs", eval_elapsed)
+
         report = self._build_report(samples, results)
         self._save_report(report)
+
+        total_elapsed = time.perf_counter() - run_start
+        aggregate = report.get("aggregate_scores", {})
+        usage = report.get("openrouter_usage", {})
+        logger.info(
+            "═══ RAGAS Evaluation Finished ═══ "
+            "total_time=%.1fs | samples=%d | requests=%d | tokens=%d | cost=$%.4f",
+            total_elapsed,
+            len(samples),
+            usage.get("request_count", 0),
+            usage.get("total_tokens", 0),
+            usage.get("cost_usd_reported", 0.0),
+        )
+        logger.info(
+            "Aggregate scores: %s",
+            " | ".join(f"{k}={v:.3f}" for k, v in aggregate.items()),
+        )
         return report
 
     async def _execute_pipeline(self, samples: list[RagasEvalSample]) -> list[RagasEvalSample]:
@@ -189,16 +266,16 @@ class RagasEvaluator:
     def _apply_fixtures(self, samples: list[RagasEvalSample]) -> list[RagasEvalSample]:
         progress = ProgressTracker(len(samples), "Fixture")
         if self.config.fixture_path is None:
+            logger.info("Fixture mode: using dataset-provided contexts and responses (no fixture file)")
             for sample in samples:
-                logger.info("Using dataset-provided fixture data for %s", sample.id)
                 if sample.response:
                     sample.retrieved_contexts = list(sample.provided_contexts)
                 progress.advance(sample.id)
             return samples
 
         fixtures = load_fixtures(self.config.fixture_path)
+        logger.info("Fixture mode: loading pre-computed responses from %s", self.config.fixture_path.name)
         for sample in samples:
-            logger.info("Loading fixture output for %s", sample.id)
             fixture = fixtures.get(sample.id, {})
             sample.response = fixture.get("response", "")
             sample.retrieved_contexts = fixture.get("retrieved_contexts", [])
@@ -208,10 +285,11 @@ class RagasEvaluator:
     async def _run_live_pipeline(self, samples: list[RagasEvalSample]) -> list[RagasEvalSample]:
         self._init_pipeline_services()
         progress = ProgressTracker(len(samples), "Pipeline")
+        logger.info("Live pipeline: running retrieval + response generation for %d samples", len(samples))
 
-        for sample in samples:
+        for idx, sample in enumerate(samples, start=1):
+            sample_start = time.perf_counter()
             try:
-                logger.info("Running live pipeline for %s", sample.id)
                 from langchain_core.messages import HumanMessage
 
                 from src.utils.state import AgentState
@@ -231,8 +309,26 @@ class RagasEvaluator:
 
                 result = self._response_service.generate(state)
                 sample.response = result.get("draft_response", "")
+                sample_elapsed = time.perf_counter() - sample_start
+                logger.info(
+                    "[%d/%d] %s — retrieved=%d chunks, response=%d chars (%.1fs)",
+                    idx,
+                    len(samples),
+                    sample.id,
+                    len(sample.retrieved_contexts),
+                    len(sample.response),
+                    sample_elapsed,
+                )
             except Exception as exc:
-                logger.warning("Pipeline failed for %s: %s", sample.id, exc)
+                sample_elapsed = time.perf_counter() - sample_start
+                logger.warning(
+                    "[%d/%d] %s — FAILED after %.1fs: %s",
+                    idx,
+                    len(samples),
+                    sample.id,
+                    sample_elapsed,
+                    exc,
+                )
                 sample.response = ""
                 sample.retrieved_contexts = []
             finally:
@@ -247,10 +343,27 @@ class RagasEvaluator:
 
             self._retriever = VectorStoreTools()
             self._retrieval_node = RetrievalNode(retriever=self._retriever)
+            logger.info(
+                "Pipeline retriever initialized: strategy=%s, top_k=%d",
+                self._retriever.retrieval_strategy,
+                self._retrieval_node.top_k,
+            )
         if self._response_service is None:
             from src.services.response_generation import ResponseGenerationService
 
-            self._response_service = ResponseGenerationService()
+            self._response_service = ResponseGenerationService(llm_provider=self._get_pipeline_llm)
+
+    def _get_pipeline_llm(self) -> Any:
+        from src.config import get_settings
+
+        settings = get_settings()
+        if not settings.OPENAI_API_KEY:
+            return None
+
+        model = settings.LLM_MODEL
+        client = self._build_tracked_openrouter_client(model)
+        logger.info("Pipeline response LLM ready: model=%s", model)
+        return _DirectOpenRouterChatLLM(client=client, model=model)
 
     def _evaluate_with_ragas(self, samples: list[RagasEvalSample]) -> Any:
         import pandas as pd
@@ -259,37 +372,47 @@ class RagasEvaluator:
         metrics = self._select_metrics()
         evaluator_llm = self._get_evaluator_llm()
         evaluator_embeddings = self._get_evaluator_embeddings()
-        frames: list[Any] = []
-        progress = ProgressTracker(len(samples), "RAGAS")
 
-        for sample in samples:
-            logger.info("Evaluating RAGAS metrics for %s", sample.id)
-            eval_dataset = EvaluationDataset(
-                samples=[
-                    SingleTurnSample(
-                        user_input=sample.question,
-                        retrieved_contexts=sample.retrieved_contexts,
-                        response=_strip_citation_markers(sample.response),
-                        reference=sample.ground_truth,
-                        reference_contexts=sample.reference_contexts,
-                    )
-                ]
+        ragas_samples = [
+            SingleTurnSample(
+                user_input=sample.question,
+                retrieved_contexts=sample.retrieved_contexts,
+                response=_strip_citation_markers(sample.response),
+                reference=sample.ground_truth,
+                reference_contexts=sample.reference_contexts,
             )
+            for sample in samples
+        ]
 
-            result = evaluate(
-                dataset=eval_dataset,
-                metrics=metrics,
-                llm=evaluator_llm,
-                embeddings=evaluator_embeddings,
+        metric_names = [type(m).__name__ for m in metrics]
+        logger.info(
+            "RAGAS scoring: %d samples × %d metrics [%s] — batch mode, json_object enforced",
+            len(ragas_samples),
+            len(metrics),
+            ", ".join(metric_names),
+        )
+        eval_dataset = EvaluationDataset(samples=ragas_samples)
+        result = evaluate(
+            dataset=eval_dataset,
+            metrics=metrics,
+            llm=evaluator_llm,
+            embeddings=evaluator_embeddings,
+        )
+
+        frame = result.to_pandas()
+        frame.insert(0, "sample_id", [sample.id for sample in samples])
+
+        # Log per-sample scores for quick visibility
+        for idx, sample in enumerate(samples):
+            row = frame.iloc[idx]
+            scores_str = " | ".join(
+                f"{col}={coerce_score(row[col]):.2f}"
+                for col in frame.columns
+                if col != "sample_id" and coerce_score(row.get(col)) is not None
             )
-            frame = result.to_pandas()
-            frame.insert(0, "sample_id", sample.id)
-            frames.append(frame)
-            progress.advance(sample.id)
+            logger.info("  %s: %s", sample.id, scores_str or "no numeric scores")
 
-        if not frames:
-            return pd.DataFrame()
-        return pd.concat(frames, ignore_index=True)
+        return frame
 
     def _before_openrouter_request(self, kind: str, model: str) -> None:
         with self._request_lock:
@@ -511,9 +634,10 @@ class RagasEvaluator:
         sequential_llm = _build_sequential_llm_class()
         self._llm = sequential_llm(openrouter_client=client, openrouter_model=model)
         logger.info(
-            "Evaluator LLM: _SequentialOpenRouterLLM (model=%s) - "
-            "n>1 requests are decomposed into sequential n=1 calls for OpenRouter compatibility.",
+            "Evaluator LLM ready: model=%s | json_mode=on | throttle=%.2fs+%.2fs jitter",
             model,
+            self.config.openrouter_min_interval_seconds,
+            self.config.openrouter_jitter_seconds,
         )
 
         return self._llm
@@ -538,6 +662,7 @@ class RagasEvaluator:
             client = self._build_tracked_openrouter_client(model)
             self._embeddings = _EmbeddingAdapter(client, model)
 
+        logger.info("Evaluator embeddings ready: model=%s", model)
         return self._embeddings
 
     def _build_report(self, samples: list[RagasEvalSample], results: Any) -> dict[str, Any]:

@@ -166,6 +166,26 @@ class HierarchicalChunker:
             2,
             3,
         ),
+        (
+            "subsection",
+            re.compile(
+                r"^(?:#+\s*)?Semester\s+([IVXLCDM]+)\b\s*(.*)$",
+                re.IGNORECASE,
+            ),
+            3,
+            1,
+            2,
+        ),
+        (
+            "clause",
+            re.compile(
+                r"^(?:#+\s*)?Pilihan\s+(\d+)\b\s*(.*)$",
+                re.IGNORECASE,
+            ),
+            4,
+            1,
+            2,
+        ),
     )
     _PASAL_REF = re.compile(r"\bPasal\s+([A-Za-z0-9.\-]+)", re.IGNORECASE)
     _AYAT_REF = re.compile(r"\bAyat\s*\(?([A-Za-z0-9]+)\)?", re.IGNORECASE)
@@ -176,7 +196,7 @@ class HierarchicalChunker:
 
     def __init__(
         self,
-        parent_max_chars: int = 5000,
+        parent_max_chars: int = 8000,
         child_max_chars: int = 1200,
         child_overlap_chars: int = 120,
     ):
@@ -426,10 +446,19 @@ class HierarchicalChunker:
         return sorted(ref for ref in refs if ref)
 
     def _select_parent_nodes(self, root: StructureNode) -> list[StructureNode]:
-        """Prefer section-level units as parent chunks, then fall back to chapters."""
+        """Prefer section-level units as parent chunks, including leaf chapters with content."""
         sections = [node for node in self._walk(root) if node.node_type in SECTION_TYPES]
         if sections:
-            return sections
+            # Also include chapters that have no section-level children (leaf chapters).
+            # These chapters hold content directly and would otherwise be lost.
+            leaf_chapters = [
+                node
+                for node in self._walk(root)
+                if node.node_type == "chapter"
+                and not any(child.node_type in SECTION_TYPES for child in node.children)
+                and (node.content_blocks or node.children)
+            ]
+            return sections + leaf_chapters
         chapters = [node for node in self._walk(root) if node.node_type == "chapter"]
         if chapters:
             return chapters

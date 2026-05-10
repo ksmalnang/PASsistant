@@ -80,7 +80,9 @@ class IndexingOperations:
             for parent in structured_document.parent_chunks
         ]
 
-        child_texts = [chunk.text for chunk in structured_document.child_chunks]
+        child_texts = [
+            self._build_embedding_text(chunk) for chunk in structured_document.child_chunks
+        ]
         embeddings = (
             await self._get_embeddings().aembed_documents(child_texts) if child_texts else []
         )
@@ -99,10 +101,11 @@ class IndexingOperations:
             chunk_ids.append(chunk_id)
             point_id = self._build_point_id(document.document_id, chunk_id)
 
+            embedding_text = self._build_embedding_text(chunk)
             vector: list[float] | dict[str, Any] = embedding
             if supports_bm25_vectors:
                 vector = {"": embedding}
-                bm25_vector = self._build_bm25_vector(chunk.text, is_query=False)
+                bm25_vector = self._build_bm25_vector(embedding_text, is_query=False)
                 if bm25_vector is not None:
                     vector[self.bm25_vector_name] = bm25_vector
 
@@ -265,3 +268,17 @@ class IndexingOperations:
     def _build_point_id(self, document_id: str, chunk_id: str) -> str:
         """Map a logical chunk id to a deterministic UUID for Qdrant storage."""
         return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{document_id}:{chunk_id}"))
+
+    def _build_embedding_text(self, chunk: Any) -> str:
+        """Prepend breadcrumb context to chunk text for richer embeddings.
+
+        This ensures child chunks inherit parent context (e.g. document title,
+        section name) so that retrieval can match broader queries like
+        "mata kuliah semester 5 teknik informatika" even when the chunk text
+        only contains a raw HTML table.
+        """
+        breadcrumb = str(chunk.metadata.get("breadcrumb") or "").strip()
+        text = chunk.text.strip()
+        if breadcrumb:
+            return f"{breadcrumb}\n{text}"
+        return text

@@ -19,11 +19,11 @@ class RagasEvalConfig:
     metrics_tier: str = "core"
     mode: str = "live"
     fixture_path: Path | None = None
-    k_eval: int = 5
+    k_eval: int = 10
     batch_size: int = 1
     evaluation_date: str = field(default_factory=lambda: datetime.now(UTC).date().isoformat())
-    openrouter_min_interval_seconds: float = 1.0
-    openrouter_jitter_seconds: float = 0.25
+    openrouter_min_interval_seconds: float = 0.3
+    openrouter_jitter_seconds: float = 0.15
     openrouter_max_retries: int = 3
     openrouter_backoff_base_seconds: float = 2.0
 

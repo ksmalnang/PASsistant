@@ -630,6 +630,55 @@ def test_build_reranker_document_prefers_distinct_table_groups_over_second_part_
     assert "lanjutan" not in matched_section
 
 
+def test_build_reranker_document_prioritizes_policy_rule_before_schedule_and_sync_detail():
+    """Policy reranker payloads should lead with the explicit rule before supporting details."""
+    vector_tools = VectorStoreTools()
+
+    document = vector_tools._build_reranker_document(
+        {
+            "breadcrumb": "IV.1.1. Tahap Pendaftaran dan Pembayaran DPP",
+            "matched_children": [
+                {
+                    "chunk_type": "table",
+                    "score": 0.93,
+                    "chunk_id": "iv_1_1.table_1.part_1",
+                    "text": (
+                        "DPP dana pelaksanaan pendidikan : dibayarkan 4 kali cicilan "
+                        "Cicilan I 25% : Juli"
+                    ),
+                },
+                {
+                    "chunk_type": "paragraph",
+                    "score": 0.89,
+                    "chunk_id": "iv_1_1.paragraph_1",
+                    "text": (
+                        "Perwalian dapat dilakukan setelah mahasiswa memenuhi "
+                        "persyaratan administrasi pembayaran uang kuliah "
+                        "yang disyaratkan dari DPP/SPP Tahun Akademik yang bersangkutan."
+                    ),
+                },
+                {
+                    "chunk_type": "paragraph",
+                    "score": 0.88,
+                    "chunk_id": "iv_1_1.paragraph_2",
+                    "text": (
+                        "Jika status pembayaran belum sinkron antara dpp.unpas.ac.id "
+                        "dengan SITU 2.0 maka silahkan melaporkan status pembayaran."
+                    ),
+                },
+            ],
+        }
+    )
+
+    matched_section = document.split("Matched child evidence:\n", 1)[1]
+    assert "Perwalian dapat dilakukan setelah" in matched_section
+    assert "Cicilan I 25% : Juli" in matched_section
+    assert "SITU 2.0" in matched_section
+    assert matched_section.index("Perwalian dapat dilakukan setelah") < matched_section.index(
+        "Cicilan I 25% : Juli"
+    )
+
+
 def test_citation_builder_uses_child_snippet_and_locations():
     """Citation previews should expose matched child rows, not heading-only parents."""
     citations = CitationBuilder().build(
@@ -657,6 +706,49 @@ def test_citation_builder_uses_child_snippet_and_locations():
     assert citations[0].snippet == "<tr><td>CPL01</td><td>IF21W0101</td></tr>"
     assert citations[0].page == 86
     assert citations[0].source_locations == [{"page": 85, "bbox_2d": [1, 2, 3, 4]}]
+
+
+def test_citation_builder_prefers_explicit_policy_child_over_higher_scored_schedule_table():
+    """Policy citations should preview the normative rule, not just the schedule fragment."""
+    citations = CitationBuilder().build(
+        [
+            {
+                "document_id": "doc-001",
+                "filename": "policy.pdf",
+                "doc_title": "Panduan Akademik",
+                "breadcrumb": "IV.1.1. Tahap Pendaftaran dan Pembayaran DPP",
+                "score": 0.32,
+                "parent_id": "doc-001:iv_1_1",
+                "text": "Tahap Pendaftaran dan Pembayaran DPP",
+                "matched_children": [
+                    {
+                        "chunk_id": "iv_1_1.table_1.part_1",
+                        "chunk_type": "table",
+                        "score": 0.93,
+                        "text": (
+                            "DPP dana pelaksanaan pendidikan : dibayarkan 4 kali cicilan "
+                            "Cicilan I 25% : Juli"
+                        ),
+                        "source_locations": [{"page": 65, "bbox_2d": [1, 2, 3, 4]}],
+                    },
+                    {
+                        "chunk_id": "iv_1_1.paragraph_1",
+                        "chunk_type": "paragraph",
+                        "score": 0.89,
+                        "text": (
+                            "Perwalian dapat dilakukan setelah mahasiswa memenuhi "
+                            "persyaratan administrasi pembayaran uang kuliah "
+                            "yang disyaratkan dari DPP/SPP Tahun Akademik yang bersangkutan."
+                        ),
+                        "source_locations": [{"page": 64, "bbox_2d": [5, 6, 7, 8]}],
+                    },
+                ],
+            }
+        ]
+    )
+
+    assert citations[0].snippet.startswith("Perwalian dapat dilakukan setelah")
+    assert citations[0].page == 65
 
 
 def test_source_locations_prefer_body_heading_over_toc_for_heading_only_text():

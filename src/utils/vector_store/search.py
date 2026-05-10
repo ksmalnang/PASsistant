@@ -23,6 +23,28 @@ class SearchOperations:
     _TABLE_PART_ID_PATTERN = re.compile(r"\.table_(\d+)\.part_(\d+)$")
     _RRF_RELATIVE_KEEP_RATIO = 0.5
     _RERANKER_FINAL_SCORE_THRESHOLD = 0.0
+    _MAX_RERANKER_CHILDREN = 3
+    _POLICY_RULE_MARKERS = (
+        "dapat dilakukan setelah",
+        "tidak dapat",
+        "belum bisa",
+        "belum dapat",
+        "wajib",
+        "harus",
+        "syarat",
+        "ketentuan",
+    )
+    _POLICY_SCOPE_MARKERS = (
+        "dpp",
+        "spp",
+        "perwalian",
+        "krs",
+        "situ 2.0",
+        "cicilan",
+        "tagihan",
+        "pembayaran",
+        "bayar",
+    )
     cache: RedisCache
     parent_store: ParentChunkStore
     retrieval_strategy: RetrievalStrategy
@@ -51,7 +73,7 @@ class SearchOperations:
         query: str,
         document_type: DocumentType | None = None,
         top_k: int = 5,
-        score_threshold: float = 0.5,
+        score_threshold: float = 0.2,
     ) -> list[dict]:
         """
         Retrieve relevant indexed document context using the configured strategy.
@@ -350,7 +372,7 @@ class SearchOperations:
             if group_key:
                 seen_groups.add(group_key)
             snippets.append(text[:2000])
-            if len(snippets) >= 2:
+            if len(snippets) >= self._MAX_RERANKER_CHILDREN:
                 break
         if not snippets:
             return ""
@@ -359,19 +381,22 @@ class SearchOperations:
     def _matched_child_rank_key(
         self,
         child: dict[str, Any],
-    ) -> tuple[int, int, int, int, int, int]:
-        """Prefer content-rich table/list chunks over captions or generic paragraphs."""
+    ) -> tuple[int, int, int, int, int, int, int]:
+        """Prefer explicit policy rules, then content-rich table/list chunks."""
         text = str(child.get("text") or "").strip()
         chunk_type = str(child.get("chunk_type") or "").lower()
         is_table_like = chunk_type in {"table", "list"} or self._is_table_like_text(text)
+        explicit_policy_rule = self._contains_explicit_policy_rule(text)
+        policy_like = self._is_policy_like_text(text)
         is_caption_only = self._is_caption_only_child_text(text)
         data_richness = self._child_data_richness(text)
         score = float(child.get("score") or 0.0)
         text_length = len(text)
         table_order, part_order = self._matched_child_order(child)
         return (
-            1 if is_table_like else 0,
+            2 if explicit_policy_rule else 1 if policy_like else 0,
             0 if is_caption_only else 1,
+            1 if is_table_like else 0,
             -table_order,
             -part_order,
             data_richness,
@@ -420,6 +445,23 @@ class SearchOperations:
         """Return whether text likely contains serialized table/list structure."""
         lowered = text.lower()
         return "|" in text or "tabel " in lowered or "<table" in lowered or "<td" in lowered
+
+    def _contains_explicit_policy_rule(self, text: str) -> bool:
+        """Detect policy sentences that directly encode a rule or prerequisite."""
+        normalized = " ".join(text.split()).strip().lower()
+        if not normalized:
+            return False
+        return any(marker in normalized for marker in self._POLICY_RULE_MARKERS)
+
+    def _is_policy_like_text(self, text: str) -> bool:
+        """Detect academic-policy evidence even when it is not a direct rule sentence."""
+        normalized = " ".join(text.split()).strip().lower()
+        if not normalized:
+            return False
+        return any(
+            marker in normalized
+            for marker in self._POLICY_SCOPE_MARKERS + self._POLICY_RULE_MARKERS
+        )
 
     def _build_search_cache_key(
         self,

@@ -72,6 +72,18 @@ class DependencyHealthResponse(BaseModel):
     )
 
 
+class DocumentDeleteResponse(BaseModel):
+    """Response for document deletion."""
+
+    success: bool = Field(default=True, description="Whether deletion completed")
+    document_id: str = Field(description="Deleted document identifier")
+    filename: str = Field(description="Deleted document filename")
+    chunks_deleted: bool = Field(
+        default=True,
+        description="Whether vector chunks were removed from the index",
+    )
+
+
 class DocumentIngestionResponse(BaseModel):
     """Knowledge-base ingestion response."""
 
