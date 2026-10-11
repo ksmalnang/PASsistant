@@ -1,5 +1,6 @@
 """Search, result hydration, and ranking helpers for vector retrieval."""
 
+import asyncio
 import hashlib
 import logging
 from types import SimpleNamespace
@@ -63,38 +64,101 @@ class SearchOperations:
             Flat list of retrieved chunk results
         """
         query_embedding = await self._get_embeddings().aembed_query(query)
-        self._ensure_collection_for_vector_size(len(query_embedding))
+        await asyncio.to_thread(self._ensure_collection_for_vector_size, len(query_embedding))
         cache_key = self._build_search_cache_key(
             query=query,
             document_type=document_type,
             top_k=top_k,
             score_threshold=score_threshold,
         )
-        cached_results = self.cache.get_json(cache_key)
+        cached_results = await asyncio.to_thread(self.cache.get_json, cache_key)
         if cached_results is not None:
             logger.debug("Returning cached retrieval results for %s", cache_key)
             return cached_results
 
+        limited = await self._search_one(
+            query=query,
+            query_embedding=query_embedding,
+            query_filter=self._build_document_filter(document_type),
+            top_k=top_k,
+            score_threshold=score_threshold,
+        )
+        await asyncio.to_thread(self.cache.set_json, cache_key, limited)
+        return limited
+
+    async def search_many(
+        self,
+        queries: list[str],
+        document_type: DocumentType | None = None,
+        top_k: int = 5,
+        score_threshold: float = 0.2,
+    ) -> list[list[dict]]:
+        """Retrieve results for several query variants using one batched embedding call."""
+        embeddings = await self._get_embeddings().aembed_documents(queries)
+        await asyncio.to_thread(self._ensure_collection_for_vector_size, len(embeddings[0]))
         query_filter = self._build_document_filter(document_type)
-        results = self._search_candidates(
+        cache_keys = [
+            self._build_search_cache_key(
+                query=query,
+                document_type=document_type,
+                top_k=top_k,
+                score_threshold=score_threshold,
+            )
+            for query in queries
+        ]
+
+        resolved: dict[int, list[dict]] = {}
+        misses: list[int] = []
+        for index, cache_key in enumerate(cache_keys):
+            cached = await asyncio.to_thread(self.cache.get_json, cache_key)
+            if cached is None:
+                misses.append(index)
+            else:
+                resolved[index] = cached
+
+        if misses:
+            fetched = await asyncio.gather(
+                *[
+                    self._search_one(
+                        query=queries[index],
+                        query_embedding=embeddings[index],
+                        query_filter=query_filter,
+                        top_k=top_k,
+                        score_threshold=score_threshold,
+                    )
+                    for index in misses
+                ]
+            )
+            for index, found in zip(misses, fetched, strict=True):
+                await asyncio.to_thread(self.cache.set_json, cache_keys[index], found)
+                resolved[index] = found
+
+        return [resolved[index] for index in range(len(queries))]
+
+    async def _search_one(
+        self,
+        query: str,
+        query_embedding: list[float],
+        query_filter: Filter | None,
+        top_k: int,
+        score_threshold: float,
+    ) -> list[dict[str, Any]]:
+        """Rank one query variant through first stage, hydration, and second stage."""
+        results = await self._search_candidates(
             query=query,
             query_embedding=query_embedding,
             query_filter=query_filter,
             top_k=top_k,
             score_threshold=score_threshold,
         )
-
         hydrated = self._hydrate_results(results)
         ordered = sorted(
             hydrated.values(),
             key=lambda item: item["score"],
             reverse=True,
         )
-        reranked = self._rerank_results(query, ordered)
-        filtered = self._filter_final_results(reranked)
-        limited = filtered[:top_k]
-        self.cache.set_json(cache_key, limited)
-        return limited
+        reranked = await self._rerank_results(query, ordered)
+        return self._filter_final_results(reranked)[:top_k]
 
     def _hydrate_results(self, results: list[Any]) -> dict[str, dict[str, Any]]:
         """Build a flat map of result ID → chunk result."""
@@ -144,7 +208,7 @@ class SearchOperations:
             multiplier = self.reranker_candidate_multiplier
         return max(top_k * multiplier, top_k)
 
-    def _rerank_results(
+    async def _rerank_results(
         self,
         query: str,
         results: list[dict[str, Any]],
@@ -154,7 +218,7 @@ class SearchOperations:
             return results
 
         documents = [self._build_reranker_document(result) for result in results]
-        scores = self._score_reranker_documents(query=query, documents=documents)
+        scores = await asyncio.to_thread(self._score_reranker_documents, query, documents)
         reranked: list[dict[str, Any]] = []
         for index, reranker_score in sorted(
             enumerate(scores),
@@ -235,7 +299,7 @@ class SearchOperations:
         ).hexdigest()
         return f"search:{digest}"
 
-    def _search_candidates(
+    async def _search_candidates(
         self,
         query: str,
         query_embedding: list[float],
@@ -251,23 +315,23 @@ class SearchOperations:
         second-stage cross-encoder can decide the final ranking.
         """
         if self.retrieval_strategy in {"rrf", "reranker"} and self._supports_bm25_vectors():
-            bm25_query = self._build_bm25_vector(query, is_query=True)
+            bm25_query = await asyncio.to_thread(self._build_bm25_vector, query, is_query=True)
             if bm25_query is not None:
-                return self._rrf_search(
+                return await self._rrf_search(
                     query_embedding=query_embedding,
                     bm25_query=bm25_query,
                     query_filter=query_filter,
                     top_k=top_k,
                 )
         candidate_threshold = None if self.retrieval_strategy == "reranker" else score_threshold
-        return self._dense_search(
+        return await self._dense_search(
             query_embedding=query_embedding,
             query_filter=query_filter,
             top_k=top_k,
             score_threshold=candidate_threshold,
         )
 
-    def _dense_search(
+    async def _dense_search(
         self,
         query_embedding: list[float],
         query_filter: Filter | None,
@@ -275,7 +339,8 @@ class SearchOperations:
         score_threshold: float | None,
     ) -> list[Any]:
         """Run a dense-vector nearest-neighbor search."""
-        return self._query_points(
+        return await asyncio.to_thread(
+            self._query_points,
             collection_name=self.collection_name,
             query=query_embedding,
             query_filter=query_filter,
@@ -284,7 +349,7 @@ class SearchOperations:
             with_payload=True,
         )
 
-    def _rrf_search(
+    async def _rrf_search(
         self,
         query_embedding: list[float],
         bm25_query: SparseVector,
@@ -293,20 +358,24 @@ class SearchOperations:
     ) -> list[Any]:
         """Fuse dense and BM25-ranked candidates with Reciprocal Rank Fusion."""
         candidate_limit = self._resolve_candidate_limit(top_k)
-        dense_points = self._query_points(
-            collection_name=self.collection_name,
-            query=query_embedding,
-            query_filter=query_filter,
-            limit=candidate_limit,
-            with_payload=True,
-        )
-        bm25_points = self._query_points(
-            collection_name=self.collection_name,
-            query=bm25_query,
-            using=self.bm25_vector_name,
-            query_filter=query_filter,
-            limit=candidate_limit,
-            with_payload=True,
+        dense_points, bm25_points = await asyncio.gather(
+            asyncio.to_thread(
+                self._query_points,
+                collection_name=self.collection_name,
+                query=query_embedding,
+                query_filter=query_filter,
+                limit=candidate_limit,
+                with_payload=True,
+            ),
+            asyncio.to_thread(
+                self._query_points,
+                collection_name=self.collection_name,
+                query=bm25_query,
+                using=self.bm25_vector_name,
+                query_filter=query_filter,
+                limit=candidate_limit,
+                with_payload=True,
+            ),
         )
         return self._fuse_with_rrf(
             dense_points=dense_points,

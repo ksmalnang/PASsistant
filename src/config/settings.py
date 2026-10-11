@@ -45,6 +45,10 @@ class Settings(BaseSettings):
         default=True,
         description="Use reasoning internally without returning reasoning text when supported",
     )
+    QUERY_REWRITE_MODEL: str = Field(
+        default="",
+        description="Fast model for query rewriting (falls back to LLM_MODEL when empty)",
+    )
     EMBEDDING_MODEL: str = Field(
         default="qwen/qwen3-embedding-8b:nitro",
         description="Embedding model for vector search",
@@ -127,6 +131,12 @@ class Settings(BaseSettings):
         default=5,
         ge=1,
         description="Number of hydrated context records to retrieve and expose to response generation",
+    )
+    RETRIEVAL_MAX_QUERY_VARIANTS: int = Field(
+        default=2,
+        ge=1,
+        le=3,
+        description="Maximum query variants searched per retrieval turn",
     )
     RERANKER_PROVIDER: Literal["openrouter", "jina", "custom", "local"] = Field(
         default="openrouter",

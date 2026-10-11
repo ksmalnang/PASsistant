@@ -5,14 +5,17 @@ from types import SimpleNamespace
 import pytest
 
 from src.clients import (
-    close_all_clients,
+    aclose_all_clients,
+    aclose_decision_client,
     close_cache,
     close_qdrant_client,
     get_cache,
+    get_decision_client,
     get_llm,
     get_qdrant_client,
     get_reranker,
 )
+from src.clients.llm import REWRITE_MAX_TOKENS, get_rewrite_llm
 from src.clients.reranker import RemoteReranker
 from src.utils.vector_store import VectorStoreTools
 
@@ -37,6 +40,28 @@ def test_unit_01_providers_return_process_wide_singleton(
     assert get_llm() is get_llm()
 
 
+def test_unit_07_rewrite_provider_disables_reasoning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The rewrite client opts out of reasoning so its token cap yields an answer."""
+    monkeypatch.setattr(
+        "src.clients.llm.get_settings",
+        lambda: SimpleNamespace(
+            OPENAI_API_KEY="test-key",
+            OPENAI_BASE_URL="https://openrouter.invalid/api/v1",
+            LLM_MODEL="test-model",
+            QUERY_REWRITE_MODEL="",
+        ),
+    )
+    monkeypatch.setattr("src.clients.llm._rewrite_llm_instance", None)
+
+    llm = get_rewrite_llm()
+
+    assert llm is not None
+    assert llm.extra_body == {"reasoning": {"enabled": False}}
+    assert llm.max_tokens == REWRITE_MAX_TOKENS
+
+
 def test_unit_02_closes_are_noops_before_initialization(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -48,13 +73,35 @@ def test_unit_02_closes_are_noops_before_initialization(
     close_qdrant_client()
 
 
-def test_unit_03_closes_are_idempotent() -> None:
+async def test_unit_03_closes_are_idempotent() -> None:
     """Closing every process-wide client twice does not raise."""
     get_qdrant_client()
     get_cache()
 
-    close_all_clients()
-    close_all_clients()
+    await aclose_all_clients()
+    await aclose_all_clients()
+
+
+async def test_unit_08_shutdown_closes_decision_client_from_running_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Shutdown on the event loop thread closes the async decision client."""
+    monkeypatch.setattr(
+        "src.clients.decision.get_settings",
+        lambda: SimpleNamespace(DECISION_API_KEY="test-key"),
+    )
+    monkeypatch.setattr("src.clients.decision._decision_client", None)
+    client = get_decision_client()
+
+    await aclose_all_clients()
+
+    assert client._client.is_closed
+
+    replacement = get_decision_client()
+    assert replacement is not client
+
+    await aclose_decision_client()
+    assert replacement._client.is_closed
 
 
 def test_unit_04_vector_store_uses_shared_client() -> None:

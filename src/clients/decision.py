@@ -430,12 +430,8 @@ def get_decision_client() -> JevDecisionClient:
     return _decision_client
 
 
-def close_decision_client() -> None:
+async def aclose_decision_client() -> None:
     """Close and reset the process-wide decision client.
-
-    If a running event loop is available (e.g., FastAPI async shutdown),
-    the underlying httpx AsyncClient is awaited explicitly. Otherwise the
-    reference is dropped and GC will release connections.
 
     Safe to call more than once.
     """
@@ -446,19 +442,7 @@ def close_decision_client() -> None:
     _decision_client = None
 
     logger.debug("Closing JevDecisionClient...")
-    try:
-        import asyncio
-        loop = asyncio.get_running_loop()
-        if loop.is_closed():
-            logger.debug("Event loop is closed; dropping reference for GC cleanup")
-        else:
-            # Explicitly await the async close via the running loop
-            future = asyncio.run_coroutine_threadsafe(client.aclose(), loop)
-            future.result(timeout=10.0)
-            logger.debug("JevDecisionClient closed via awaited aclose()")
-            return
-    except RuntimeError:
-        logger.debug("No running event loop; dropping reference for GC cleanup")
+    await client.aclose()
 
 
 # ---------------------------------------------------------------------------
