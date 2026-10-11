@@ -1,13 +1,12 @@
 """Retrieval node."""
 
-import asyncio
 import logging
 import re
 from typing import Any
 
 from langchain_core.messages import HumanMessage
 
-from src.clients.llm import get_llm
+from src.clients.llm import get_rewrite_llm
 from src.config import get_settings
 from src.services.contracts import DocumentRetriever
 from src.utils.nodes.prompts import QUERY_REWRITE_PROMPT
@@ -76,15 +75,20 @@ class RetrievalNode:
     _SEMESTER_ARABIC_PATTERN = re.compile(r"\b(semester)\s+(\d{1,2})\b", re.IGNORECASE)
     _SEMESTER_ROMAN_PATTERN = re.compile(r"\b(semester)\s+([IVXL]+)\b", re.IGNORECASE)
 
+    # A rewrite only needs enough of a long pasted message to find its keywords.
+    _REWRITE_INPUT_LIMIT = 500
+
     def __init__(
         self,
         retriever: DocumentRetriever | None = None,
-        llm_provider=get_llm,
+        llm_provider=get_rewrite_llm,
     ):
         self.vector_tools = retriever or VectorStoreTools()
         self._llm_provider = llm_provider
         self._llm = None
-        self.top_k = get_settings().RETRIEVAL_TOP_K
+        settings = get_settings()
+        self.top_k = settings.RETRIEVAL_TOP_K
+        self.max_query_variants = settings.RETRIEVAL_MAX_QUERY_VARIANTS
 
     async def run(self, state: AgentState) -> dict:
         """
@@ -104,7 +108,7 @@ class RetrievalNode:
                 state.current_intent,
                 state.retrieval_query,
             )
-            queries = self._build_queries(state)
+            queries = await self._build_queries(state)
             if not queries:
                 return {
                     "retrieved_chunks": [],
@@ -116,16 +120,11 @@ class RetrievalNode:
                     ),
                 }
             merged_results: list[dict[str, Any]] = []
-            query_results_list = await asyncio.gather(
-                *[
-                    self.vector_tools.search_similar(
-                        query=query,
-                        document_type=doc_type,
-                        top_k=self.top_k,
-                        score_threshold=0.2,
-                    )
-                    for query in queries
-                ]
+            query_results_list = await self.vector_tools.search_many(
+                queries=queries,
+                document_type=doc_type,
+                top_k=self.top_k,
+                score_threshold=0.2,
             )
             for query, query_results in zip(queries, query_results_list, strict=True):
                 merged_results = self._merge_results(merged_results, query_results, query)
@@ -170,7 +169,7 @@ class RetrievalNode:
         lowered = query.lower()
         return any(term in lowered for term in self._POLICY_SCOPE_TERMS)
 
-    def _build_queries(self, state: AgentState) -> list[str]:
+    async def _build_queries(self, state: AgentState) -> list[str]:
         """Build original, rewritten, and synonym-expanded retrieval queries."""
         original = (state.retrieval_query or "").strip()
         if not original:
@@ -179,24 +178,23 @@ class RetrievalNode:
             return [original]
 
         queries = [original]
-        rewritten = self._rewrite_query(original)
+        rewritten = await self._rewrite_query(original)
         if rewritten and rewritten.lower() != original.lower():
             queries.append(rewritten)
 
         expanded = self._expand_query(rewritten or original)
         if expanded and all(expanded.lower() != query.lower() for query in queries):
             queries.append(expanded)
-        return queries[:3]
+        return queries[: self.max_query_variants]
 
-    def _rewrite_query(self, question: str) -> str:
+    async def _rewrite_query(self, question: str) -> str:
         """Compress a conversational question into a keyword-rich retrieval query."""
         llm = self._get_llm()
         if llm is None:
             return question
+        prompt = QUERY_REWRITE_PROMPT.format(question=question[: self._REWRITE_INPUT_LIMIT])
         try:
-            response = llm.invoke(
-                [HumanMessage(content=QUERY_REWRITE_PROMPT.format(question=question))]
-            )
+            response = await llm.ainvoke([HumanMessage(content=prompt)])
             rewritten = str(response.content).strip()
             if rewritten:
                 return rewritten.splitlines()[0].strip()

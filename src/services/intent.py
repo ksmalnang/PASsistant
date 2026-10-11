@@ -241,7 +241,7 @@ valid_intents = {
 INTENT_LABELS: dict[str, str] = {
     "upload_document": "The user wants to upload, process, or extract text/data from a file (e.g., PDF, image, document).",
     "query_student": "The user is asking about a student record or transcript-style data (e.g., GPA, grades, transcript, credits, academic standing).",
-    "query_document": "The user is asking about academic policies, procedures, deadlines, services, or the contents of documents (uploaded or system-provided).",
+    "query_document": "The user is asking about academic policies, courses, procedures, deadlines, services, or the contents of documents (uploaded or system-provided).",
     "manage_record": "The user wants to create or register student record data from provided text or documents.",
     "general_chat": "The message is a greeting, casual conversation, or unrelated to academic services or records.",
 }

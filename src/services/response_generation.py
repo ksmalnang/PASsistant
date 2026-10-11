@@ -8,7 +8,7 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, SystemMessage
 
-from src.clients.llm import get_llm
+from src.clients.llm import get_response_llm
 from src.config import get_settings
 from src.guardrails.output_guard import OutputGuard
 from src.services.contracts import LLMProvider
@@ -242,7 +242,7 @@ class ResponseGenerationService:
         self,
         context_builder: ResponseContextBuilder | None = None,
         citation_builder: CitationBuilder | None = None,
-        llm_provider: LLMProvider = get_llm,
+        llm_provider: LLMProvider = get_response_llm,
     ):
         self._context_builder = context_builder or ResponseContextBuilder()
         self._citation_builder = citation_builder or CitationBuilder()

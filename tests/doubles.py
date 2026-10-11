@@ -61,6 +61,25 @@ class FakeLLMProvider:
         return self.llm
 
 
+class FakeDecisionClient:
+    """Decision client double recording questions and returning scripted answers."""
+
+    def __init__(self, choice: str = "general_chat", confidence: float = 0.9) -> None:
+        self.choice = choice
+        self.confidence = confidence
+        self.calls = 0
+
+    async def ask_choice(self, *args: Any, **kwargs: Any) -> Any:
+        from src.clients.decision import ChoiceAnswer
+
+        self.calls += 1
+        return ChoiceAnswer(
+            choice=self.choice,
+            confidence=self.confidence,
+            probabilities={self.choice: self.confidence},
+        )
+
+
 class RecordingChatAgent:
     """ChatAgent double that records turns and replays scripted states."""
 

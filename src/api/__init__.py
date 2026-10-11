@@ -24,7 +24,7 @@ from fastapi.openapi.utils import get_openapi
 
 from src.__version__ import __version__
 from src.api.routes.router import router
-from src.clients import close_all_clients
+from src.clients import aclose_all_clients
 from src.config import (
     build_logging_config,
     configure_logging,
@@ -33,6 +33,7 @@ from src.config import (
     set_log_context,
 )
 from src.guardrails.rate_limit import InMemoryRateLimiter
+from src.utils.vector_store import VectorStoreTools
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -69,8 +70,13 @@ _meta = _get_project_metadata()
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application lifespan manager."""
     logger.info("Starting %s", app.title)
+    try:
+        VectorStoreTools().warm_up()
+    except Exception:
+        # Warm-up only moves model loading off the first query; serving continues.
+        logger.error("BM25 warm-up failed; hybrid retrieval will fail until it loads", exc_info=True)
     yield
-    close_all_clients()
+    await aclose_all_clients()
     logger.info("Shutting down %s", app.title)
 
 
