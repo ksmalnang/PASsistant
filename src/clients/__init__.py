@@ -4,7 +4,7 @@ import logging
 
 from src.clients.decision import (
     JevDecisionClient,
-    close_decision_client,
+    aclose_decision_client,
     get_decision_client,
 )
 from src.clients.embeddings import get_embeddings
@@ -25,9 +25,9 @@ __all__ = [
     "JevDecisionClient",
     "RedisCache",
     "RemoteReranker",
-    "close_all_clients",
+    "aclose_all_clients",
+    "aclose_decision_client",
     "close_cache",
-    "close_decision_client",
     "close_qdrant_client",
     "close_zai_client",
     "get_cache",
@@ -41,10 +41,17 @@ __all__ = [
 ]
 
 
-def close_all_clients() -> None:
+async def aclose_all_clients() -> None:
     """Close every process-wide client. Safe to call more than once."""
-    for close in (close_qdrant_client, close_cache, close_zai_client, close_decision_client):
+    for close in (close_qdrant_client, close_cache, close_zai_client):
         try:
             close()
         except Exception as exc:
-            logger.warning("Shutdown cleanup failed in %s: %s", close.__name__, exc)
+            logger.warning("Shutdown cleanup failed in %s: %s", close.__name__, exc, exc_info=True)
+
+    try:
+        await aclose_decision_client()
+    except Exception as exc:
+        logger.warning(
+            "Shutdown cleanup failed in %s: %s", "aclose_decision_client", exc, exc_info=True
+        )

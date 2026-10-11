@@ -59,3 +59,11 @@ class VectorStoreTools(
     def _get_reranker(self) -> Any:
         """Return the shared reranker client, created lazily on first use."""
         return get_reranker()
+
+    def warm_up(self) -> None:
+        """Load the BM25 encoder now instead of on the first user query."""
+        if self.retrieval_strategy not in {"rrf", "reranker"}:
+            return
+        self.ensure_collection()
+        if self._supports_bm25_vectors():
+            self._get_bm25_text_embedder()

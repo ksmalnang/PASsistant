@@ -23,7 +23,7 @@ from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any, Optional
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
 from src.config import configure_logging, get_settings
@@ -175,29 +175,42 @@ class PASsistantAgent:
             files: Optional list of (filename, file_bytes) tuples
 
         Yields:
-            Structured status and final-state updates
+            Structured status, answer-token, and final-state updates
         """
         state = self._build_initial_state(message, files)
         config = self._build_run_config()
         state_snapshot = state.model_dump()
 
         try:
-            async for update in self.app.astream(
+            async for mode, payload in self.app.astream(
                 state.model_dump(),
                 config=config,
-                stream_mode="updates",
+                stream_mode=["updates", "messages"],
             ):
-                if not isinstance(update, dict):
+                if mode == "messages":
+                    chunk, metadata = payload
+                    # A complete AIMessage repeats the state message the response
+                    # node already returned; only incremental chunks are new text.
+                    if not isinstance(chunk, AIMessageChunk):
+                        continue
+                    if metadata.get("langgraph_node") != "generate_response":
+                        continue
+                    token = _message_content_to_text(chunk.content)
+                    if token:
+                        yield AgentStreamUpdate(kind="token", text=token)
                     continue
 
-                for node_name, payload in update.items():
-                    if not isinstance(payload, dict):
+                if not isinstance(payload, dict):
+                    continue
+
+                for node_name, node_update in payload.items():
+                    if not isinstance(node_update, dict):
                         continue
-                    self._merge_state_snapshot(state_snapshot, payload)
+                    self._merge_state_snapshot(state_snapshot, node_update)
                     yield AgentStreamUpdate(
                         kind="status",
                         node=node_name,
-                        payload=payload,
+                        payload=node_update,
                         state=AgentState(**state_snapshot),
                     )
 

@@ -63,6 +63,7 @@ data/raw/*
 data/processed/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
+fastembed_cache/*
 
 # Qdrant
 qdrant_storage/
@@ -80,4 +81,3 @@ qdrant_storage/
 
 # Evaluation Reports
 src/eval/reports/
-

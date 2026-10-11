@@ -92,3 +92,53 @@ async def test_api_09_chat_stream_emits_ordered_sse_events(
     assert failed_events[-1] == "run.failed"
     assert "run.completed" not in failed_events
     assert failed_frames[-1]["data"]["message"] == "The chat run failed unexpectedly."
+
+
+MASKED_STREAM_ANSWER = "NIM mahasiswa adalah [NIM disamarkan] dan proses selesai."
+
+
+class _PiiStreamAgent(RecordingChatAgent):
+    """Agent double that streams an answer carrying a full student NIM."""
+
+    async def stream_chat(
+        self,
+        message: str,
+        files: list[tuple[str, bytes]] | None = None,
+    ) -> AsyncIterator[AgentStreamUpdate]:
+        """Emit the NIM in two token chunks so it arrives split."""
+        del message, files
+        yield AgentStreamUpdate(kind="token", text="NIM mahasiswa adalah 123.")
+        yield AgentStreamUpdate(kind="token", text="4567.890 dan proses selesai.")
+        yield AgentStreamUpdate(
+            kind="final",
+            state=make_agent_state(
+                response=MASKED_STREAM_ANSWER,
+                session_id=self.session_id,
+            ),
+        )
+
+
+async def test_api_10_streamed_tokens_are_masked_before_reaching_the_client(
+    api_client: httpx.AsyncClient,
+    chat_backend: ChatBackend,
+    valid_academic_message: str,
+) -> None:
+    """Guarded deltas never publish a partial or complete NIM."""
+    chat_backend.agent_factory = lambda thread_id: _PiiStreamAgent(
+        session_id=thread_id or "pii-stream-thread"
+    )
+
+    response = await api_client.post(
+        "/chat/stream",
+        data=make_chat_payload(valid_academic_message),
+    )
+
+    frames = parse_sse_frames(response.text)
+    streamed_text = "".join(
+        frame["data"]["text"] for frame in frames if frame["event"] == "message.delta"
+    )
+
+    assert "123.4567.890" not in streamed_text
+    assert streamed_text == MASKED_STREAM_ANSWER
+    assert frames[-1]["event"] == "run.completed"
+    assert frames[-1]["data"]["response"] == MASKED_STREAM_ANSWER

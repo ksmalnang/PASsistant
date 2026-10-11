@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import re
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -19,6 +20,7 @@ from src.api.models import (
     DocumentIngestionResponse,
 )
 from src.api.sessions import session_manager
+from src.guardrails.output_guard import OutputGuard
 from src.services.contracts import ChatAgent, DocumentProcessor, SessionManager
 
 logger = logging.getLogger(__name__)
@@ -62,6 +64,19 @@ def _next_delta(emitted_text: str, candidate_text: str) -> str:
     if candidate_text.startswith(emitted_text):
         return candidate_text[len(emitted_text) :]
     return candidate_text
+
+
+_SENTENCE_BOUNDARY = re.compile(r"[.!?](?=\s)|\n")
+
+
+def _stable_prefix(text: str) -> str:
+    """Answer text up to the last sentence boundary.
+
+    Guarded PII patterns never span a sentence boundary, so holding back the
+    trailing fragment is what keeps streamed output as masked as the final text.
+    """
+    boundaries = list(_SENTENCE_BOUNDARY.finditer(text))
+    return text[: boundaries[-1].end()] if boundaries else ""
 
 
 def _stage_label(stage: str | None) -> str:
@@ -255,7 +270,10 @@ class ChatRouteService:
     ) -> None:
         """Drive agent streaming and broadcast normalized API events."""
         append = partial(self._append_event, run_state)
+        guard = OutputGuard()
         emitted_text = ""
+        answer_buffer = ""
+        streamed_response = False
         final_state: Any | None = None
 
         async def emit_delta(response_text: str) -> None:
@@ -264,6 +282,15 @@ class ChatRouteService:
             if delta:
                 emitted_text = response_text
                 await append("message.delta", {"text": delta, "index": len(emitted_text)})
+
+        async def emit_answer_text(text: str, *, final: bool = False) -> None:
+            nonlocal answer_buffer, streamed_response
+            streamed_response = True
+            answer_buffer += text
+            guarded = guard.filter_response(
+                answer_buffer if final else _stable_prefix(answer_buffer)
+            )
+            await emit_delta(guarded)
 
         async def fail(reason: str) -> None:
             await append(
@@ -278,8 +305,12 @@ class ChatRouteService:
 
         try:
             async for update in agent.stream_chat(message, files=files):
-                if update.kind == "final":
+                if update.kind == "token":
+                    await emit_answer_text(update.text)
+                elif update.kind == "final":
                     final_state = update.state
+                    if streamed_response:
+                        await emit_answer_text("", final=True)
                 elif update.kind == "status":
                     await append(
                         "run.status",
@@ -289,13 +320,14 @@ class ChatRouteService:
                             "meta": update.payload,
                         },
                     )
-                    if update.state is not None:
+                    if update.state is not None and not streamed_response:
                         await emit_delta(_assistant_text(update.state) or "")
 
             if final_state is None:
                 final_state = await agent.chat_with_state(message, files=files)
             response_text = _response_text(final_state)
-            await emit_delta(response_text)
+            if not streamed_response:
+                await emit_delta(response_text)
 
             if error := getattr(final_state, "error", None):
                 await fail(str(error))

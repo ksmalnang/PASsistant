@@ -18,6 +18,10 @@ class InvokableLLM(Protocol):
         """Run the LLM with the provided messages."""
         ...
 
+    async def ainvoke(self, messages: Sequence[Any], /, **kwargs: Any) -> Any:
+        """Run the LLM asynchronously with the provided messages."""
+        ...
+
 
 LLMProvider = Callable[[], InvokableLLM | None]
 RetrievalStrategy = Literal["similarity", "rrf", "reranker"]
@@ -65,6 +69,16 @@ class DocumentRetriever(Protocol):
         `top_k` is the maximum number of retrieval results to return.
         `score_threshold` applies directly only to pure similarity retrieval.
         """
+        ...
+
+    async def search_many(
+        self,
+        queries: list[str],
+        document_type: DocumentType | None = None,
+        top_k: int = 5,
+        score_threshold: float = 0.2,
+    ) -> list[list[dict[str, Any]]]:
+        """Run one retrieval per query variant, sharing a single embedding batch."""
         ...
 
 
@@ -120,9 +134,10 @@ class DocumentProcessor(Protocol):
 class AgentStreamUpdate:
     """Structured stream update exposed by chat agents."""
 
-    kind: Literal["status", "final"]
+    kind: Literal["status", "final", "token"]
     state: AgentState | None = None
     node: str | None = None
+    text: str = ""
     payload: dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
 

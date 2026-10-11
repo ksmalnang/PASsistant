@@ -1,4 +1,4 @@
-"""Shared LLM client."""
+"""Shared LLM clients."""
 
 from __future__ import annotations
 
@@ -13,6 +13,15 @@ if TYPE_CHECKING:  # runtime import would cycle through src.utils.tools -> src.c
     from src.services.contracts import InvokableLLM
 
 _llm_instance: InvokableLLM | None = None
+_rewrite_llm_instance: InvokableLLM | None = None
+_response_llm_instance: InvokableLLM | None = None
+
+# A rewritten query is one short line, so a low cap bounds rewrite latency.
+REWRITE_MAX_TOKENS = 64
+
+# Without this the provider spends the rewrite budget on reasoning and returns
+# an empty message, which silently turns the rewrite into a no-op.
+REWRITE_EXTRA_BODY = {"reasoning": {"enabled": False}}
 
 
 def _build_reasoning_extra_body(settings: Any) -> dict[str, Any] | None:
@@ -29,6 +38,30 @@ def _build_reasoning_extra_body(settings: Any) -> dict[str, Any] | None:
     return {"reasoning": reasoning}
 
 
+def _build_chat_model(
+    settings: Any,
+    *,
+    model: str,
+    extra_body: dict[str, Any] | None,
+    temperature: float = 0.3,
+    streaming: bool = False,
+    max_tokens: int | None = None,
+) -> ChatOpenAI:
+    """Build one chat model from settings."""
+    kwargs: dict[str, Any] = {}
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+    return ChatOpenAI(
+        model=model,
+        api_key=SecretStr(settings.OPENAI_API_KEY),
+        base_url=settings.OPENAI_BASE_URL,
+        temperature=temperature,
+        streaming=streaming,
+        extra_body=extra_body,
+        **kwargs,
+    )
+
+
 def get_llm() -> InvokableLLM | None:
     """Return the process-wide LLM client, or None without an API key."""
     global _llm_instance
@@ -36,12 +69,42 @@ def get_llm() -> InvokableLLM | None:
         settings = get_settings()
         if not settings.OPENAI_API_KEY:
             return None
-        extra_body = _build_reasoning_extra_body(settings)
-        _llm_instance = ChatOpenAI(
+        _llm_instance = _build_chat_model(
+            settings,
             model=settings.LLM_MODEL,
-            api_key=SecretStr(settings.OPENAI_API_KEY),
-            base_url=settings.OPENAI_BASE_URL,
-            temperature=0.3,
-            extra_body=extra_body,
+            extra_body=_build_reasoning_extra_body(settings),
         )
     return _llm_instance
+
+
+def get_rewrite_llm() -> InvokableLLM | None:
+    """Return the query-rewrite client: small model, no reasoning, capped output."""
+    global _rewrite_llm_instance
+    if _rewrite_llm_instance is None:
+        settings = get_settings()
+        if not settings.OPENAI_API_KEY:
+            return None
+        _rewrite_llm_instance = _build_chat_model(
+            settings,
+            model=getattr(settings, "QUERY_REWRITE_MODEL", "") or settings.LLM_MODEL,
+            extra_body=REWRITE_EXTRA_BODY,
+            temperature=0.0,
+            max_tokens=REWRITE_MAX_TOKENS,
+        )
+    return _rewrite_llm_instance
+
+
+def get_response_llm() -> InvokableLLM | None:
+    """Return the answer-generation client, streaming tokens for live delivery."""
+    global _response_llm_instance
+    if _response_llm_instance is None:
+        settings = get_settings()
+        if not settings.OPENAI_API_KEY:
+            return None
+        _response_llm_instance = _build_chat_model(
+            settings,
+            model=settings.LLM_MODEL,
+            extra_body=_build_reasoning_extra_body(settings),
+            streaming=True,
+        )
+    return _response_llm_instance
